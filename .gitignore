@@ -1,0 +1,22 @@
+# datasets / outputs
+datasets*/
+RicePest-30-YOLO/
+mixed_dataset/
+hopper_sam_masks_datasets2/
+runs/
+
+# model weights
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# cache
+__pycache__/
+*.pyc
+.cache/
+*.cache
+.ipynb_checkpoints/
+
+# system
+.DS_Store
