@@ -42,6 +42,7 @@ __all__ = (
     "CBLinear",
     "C3k2",
     "C3k2CSE",
+    "FFE",
     "C2fPSA",
     "C2PSA",
     "RepVGGDW",
@@ -751,6 +752,23 @@ class C3k2CSE(C3k2):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through C3k2 followed by channel-spatial enhancement."""
         y = super().forward(x)
+        return y + self.spatial_attn(self.channel_attn(y))
+
+
+class FFE(nn.Module):
+    """Lightweight feature fusion enhancement with channel-spatial purification."""
+
+    def __init__(self, c1, c2=None, kernel_size=7):
+        """Initialize FFE with optional channel projection and channel-spatial attention."""
+        super().__init__()
+        c2 = c1 if c2 is None else c2
+        self.proj = Conv(c1, c2, 1, 1) if c1 != c2 else nn.Identity()
+        self.channel_attn = ChannelAttention(c2)
+        self.spatial_attn = SpatialAttention(kernel_size=kernel_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Purify fused features before the detection head."""
+        y = self.proj(x)
         return y + self.spatial_attn(self.channel_attn(y))
 
 
