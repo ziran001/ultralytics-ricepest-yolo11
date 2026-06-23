@@ -20,6 +20,7 @@ __all__ = (
     "SpatialAttention",
     "CBAM",
     "Concat",
+    "WeightedConcat",
     "RepConv",
 )
 
@@ -330,3 +331,20 @@ class Concat(nn.Module):
     def forward(self, x):
         """Forward pass for the YOLOv8 mask Proto module."""
         return torch.cat(x, self.d)
+
+
+class WeightedConcat(nn.Module):
+    """Concatenate tensors after learnable branch reweighting for lightweight BiPAN-style fusion."""
+
+    def __init__(self, dimension=1, n=2, eps=1e-4):
+        """Initialize weighted concatenation along a specified dimension."""
+        super().__init__()
+        self.d = dimension
+        self.eps = eps
+        self.w = nn.Parameter(torch.ones(n, dtype=torch.float32), requires_grad=True)
+
+    def forward(self, x):
+        """Apply normalized non-negative weights to each input tensor, then concatenate."""
+        w = torch.relu(self.w)
+        w = w / (w.sum() + self.eps)
+        return torch.cat([xi * w[i] for i, xi in enumerate(x)], self.d)

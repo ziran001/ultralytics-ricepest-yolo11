@@ -73,6 +73,7 @@ from .conv import (
     LightConv,
     RepConv,
     SpatialAttention,
+    WeightedConcat,
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
 from .transformer import (
@@ -102,6 +103,7 @@ __all__ = (
     "SpatialAttention",
     "CBAM",
     "Concat",
+    "WeightedConcat",
     "TransformerLayer",
     "TransformerBlock",
     "MLPBlock",
