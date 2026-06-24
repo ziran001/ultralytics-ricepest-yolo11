@@ -42,6 +42,7 @@ __all__ = (
     "CBLinear",
     "C3k2",
     "C3k2CSE",
+    "MEN",
     "FFE",
     "C2fPSA",
     "C2PSA",
@@ -753,6 +754,90 @@ class C3k2CSE(C3k2):
         """Forward pass through C3k2 followed by channel-spatial enhancement."""
         y = super().forward(x)
         return y + self.spatial_attn(self.channel_attn(y))
+
+
+class EdgeEnhancer(nn.Module):
+    """Edge attention used by the paper-inspired Morphological Edge Network."""
+
+    def __init__(self, channels: int):
+        """Initialize local smoothing and nonlinear edge weighting."""
+        super().__init__()
+        self.smooth = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
+        self.edge_weight = nn.Sequential(Conv(channels, channels, 3, 1), nn.Sigmoid())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Enhance high-frequency residuals while retaining the original features."""
+        edge = x - self.smooth(x)
+        return x + edge * self.edge_weight(edge)
+
+
+class MSF(nn.Module):
+    """Multi-scale feature and edge enhancement unit used inside MEN."""
+
+    def __init__(self, channels: int, bins=(3, 6, 9, 12)):
+        """Build local and pooled multi-scale feature paths."""
+        super().__init__()
+        branch_channels = max(channels // len(bins), 8)
+        self.local = Conv(channels, branch_channels, 3, 1)
+        self.bins = tuple(bins)
+        self.branches = nn.ModuleList(
+            nn.Sequential(
+                Conv(channels, branch_channels, 1, 1),
+                Conv(branch_channels, branch_channels, 3, 1, g=branch_channels),
+                EdgeEnhancer(branch_channels),
+            )
+            for _ in self.bins
+        )
+        self.fuse = Conv(branch_channels * (len(self.bins) + 1), channels, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Fuse local features with edge-enhanced adaptive pooling branches."""
+        size = x.shape[-2:]
+        features = [self.local(x)]
+        for output_size, branch in zip(self.bins, self.branches):
+            pooled = F.adaptive_avg_pool2d(x, output_size)
+            features.append(F.interpolate(branch(pooled), size=size, mode="bilinear", align_corners=False))
+        return x + self.fuse(torch.cat(features, dim=1))
+
+
+class DPM(nn.Module):
+    """Dual-path morphological feature unit composed of cascaded MSF blocks."""
+
+    def __init__(self, channels: int, n: int = 1, bins=(3, 6, 9, 12)):
+        """Initialize parallel shortcut and morphological enhancement paths."""
+        super().__init__()
+        hidden = max(channels // 2, 8)
+        self.cv1 = Conv(channels, hidden * 2, 1, 1)
+        self.m = nn.Sequential(*(MSF(hidden, bins) for _ in range(n)))
+        self.cv2 = Conv(hidden * 2, channels, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the dual-path transformation and residual fusion."""
+        shortcut, enhanced = self.cv1(x).chunk(2, dim=1)
+        return x + self.cv2(torch.cat((shortcut, self.m(enhanced)), dim=1))
+
+
+class MEN(nn.Module):
+    """
+    Morphological Edge Network adapted from BEAM-YOLO for YOLO11.
+
+    This implementation follows the paper's CSP -> DPM -> MSF -> EdgeEnhancer topology. It is a reproduction from
+    the published architecture because no official implementation was available when this module was added.
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, e: float = 0.5, bins=(3, 6, 9, 12)):
+        """Initialize a CSP-style MEN block with repeated DPM enhancement units."""
+        super().__init__()
+        hidden = max(int(c2 * e), 8)
+        self.cv1 = Conv(c1, hidden * 2, 1, 1)
+        self.m = nn.ModuleList(DPM(hidden, bins=bins) for _ in range(n))
+        self.cv2 = Conv(hidden * (2 + n), c2, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Split features, apply repeated DPM units, and fuse all stages."""
+        features = list(self.cv1(x).chunk(2, dim=1))
+        features.extend(block(features[-1]) for block in self.m)
+        return self.cv2(torch.cat(features, dim=1))
 
 
 class FFE(nn.Module):
