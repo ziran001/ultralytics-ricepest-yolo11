@@ -129,6 +129,55 @@ def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7
     return iou  # IoU
 
 
+def bbox_inner_iou(box1, box2, ratio=0.7, xywh=True, CIoU=False, eps=1e-7):
+    """
+    Calculate Inner-IoU using scaled auxiliary boxes.
+
+    The auxiliary boxes keep the original centers while scaling width and height by ``ratio``. When CIoU is enabled,
+    the original-box center-distance and aspect-ratio penalties are retained.
+    """
+    if ratio <= 0:
+        raise ValueError(f"Inner-IoU ratio must be positive, but got {ratio}.")
+
+    if xywh:
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+        x1, y1 = (b1_x1 + b1_x2) / 2, (b1_y1 + b1_y2) / 2
+        x2, y2 = (b2_x1 + b2_x2) / 2, (b2_y1 + b2_y2) / 2
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+
+    inner_b1_x1, inner_b1_x2 = x1 - w1_ * ratio, x1 + w1_ * ratio
+    inner_b1_y1, inner_b1_y2 = y1 - h1_ * ratio, y1 + h1_ * ratio
+    inner_b2_x1, inner_b2_x2 = x2 - w2_ * ratio, x2 + w2_ * ratio
+    inner_b2_y1, inner_b2_y2 = y2 - h2_ * ratio, y2 + h2_ * ratio
+
+    inner_inter = (inner_b1_x2.minimum(inner_b2_x2) - inner_b1_x1.maximum(inner_b2_x1)).clamp_(0) * (
+        inner_b1_y2.minimum(inner_b2_y2) - inner_b1_y1.maximum(inner_b2_y1)
+    ).clamp_(0)
+    inner_union = w1 * h1 * ratio**2 + w2 * h2 * ratio**2 - inner_inter + eps
+    inner_iou = inner_inter / inner_union
+
+    if not CIoU:
+        return inner_iou
+
+    cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)
+    ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)
+    c2 = cw.pow(2) + ch.pow(2) + eps
+    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
+    v = (4 / math.pi**2) * ((w2 / h2).atan() - (w1 / h1).atan()).pow(2)
+    original_iou = bbox_iou(box1, box2, xywh=xywh)
+    with torch.no_grad():
+        alpha = v / (v - original_iou + (1 + eps))
+    return inner_iou - (rho2 / c2 + v * alpha)
+
+
 def mask_iou(mask1, mask2, eps=1e-7):
     """
     Calculate masks IoU.

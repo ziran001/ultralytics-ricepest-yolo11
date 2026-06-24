@@ -9,7 +9,7 @@ from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import autocast
 
-from .metrics import bbox_iou, probiou
+from .metrics import bbox_inner_iou, bbox_iou, probiou
 from .tal import bbox2dist
 
 
@@ -91,15 +91,28 @@ class DFLoss(nn.Module):
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses during training."""
 
-    def __init__(self, reg_max=16):
+    def __init__(self, reg_max=16, iou_loss="ciou", inner_iou_ratio=0.7):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
+        if iou_loss not in {"ciou", "inner_ciou"}:
+            raise ValueError(f"Unsupported IoU loss '{iou_loss}'. Expected 'ciou' or 'inner_ciou'.")
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
+        self.iou_loss = iou_loss
+        self.inner_iou_ratio = inner_iou_ratio
 
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
         """IoU loss."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+        if self.iou_loss == "inner_ciou":
+            iou = bbox_inner_iou(
+                pred_bboxes[fg_mask],
+                target_bboxes[fg_mask],
+                ratio=self.inner_iou_ratio,
+                xywh=False,
+                CIoU=True,
+            )
+        else:
+            iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
@@ -174,7 +187,11 @@ class v8DetectionLoss:
         self.use_dfl = m.reg_max > 1
 
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
-        self.bbox_loss = BboxLoss(m.reg_max).to(device)
+        self.bbox_loss = BboxLoss(
+            m.reg_max,
+            iou_loss=getattr(h, "iou_loss", "ciou"),
+            inner_iou_ratio=getattr(h, "inner_iou_ratio", 0.7),
+        ).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
     def preprocess(self, targets, batch_size, scale_tensor):
