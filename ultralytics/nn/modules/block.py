@@ -858,7 +858,7 @@ class HaarWaveletConv(nn.Module):
         self.channels = channels
         self.register_buffer("weight", filters[:, None].repeat(channels, 1, 1, 1), persistent=False)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor):
         """Return low-frequency structure and fused directional high-frequency details."""
         pad_h, pad_w = x.shape[-2] % 2, x.shape[-1] % 2
         if pad_h or pad_w:
