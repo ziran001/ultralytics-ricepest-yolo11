@@ -42,6 +42,7 @@ __all__ = (
     "CBLinear",
     "C3k2",
     "C3k2CSE",
+    "AAM",
     "MEN",
     "BAFE",
     "FFE",
@@ -925,6 +926,38 @@ class FFE(nn.Module):
         """Purify fused features before the detection head."""
         y = self.proj(x)
         return y + self.spatial_attn(self.channel_attn(y))
+
+
+class AAM(nn.Module):
+    """
+    Adaptive Attention Module adapted from MD-YOLO for channel-preserving YOLO11 integration.
+
+    The paper pools high-level features at three spatial scales, restores them to the input resolution, generates
+    spatial weights with a 1x1-ReLU-3x3-Sigmoid path, and concatenates the intermediate features. This adaptation
+    adds a final 1x1 projection so the module can be inserted into YOLO11 without changing downstream channels.
+    """
+
+    def __init__(self, c1: int, c2: int, pool_sizes=(5, 9, 13)):
+        """Initialize the three-scale context path and adaptive spatial weighting."""
+        super().__init__()
+        self.proj = Conv(c1, c2, 1, 1) if c1 != c2 else nn.Identity()
+        self.pool_sizes = pool_sizes
+        self.context = Conv(c2 * len(pool_sizes), c2, 1, 1, act=nn.ReLU())
+        self.spatial_weight = nn.Sequential(nn.Conv2d(c2, c2, 3, padding=1, bias=True), nn.Sigmoid())
+        self.fuse = Conv(c2 * 3, c2, 1, 1)
+        self.residual_scale = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Aggregate fixed-scale pooled context, apply spatial attention, and preserve the input channel count."""
+        y = self.proj(x)
+        size = y.shape[-2:]
+        pooled = [
+            F.interpolate(F.adaptive_avg_pool2d(y, output_size=s), size=size, mode="bilinear", align_corners=False)
+            for s in self.pool_sizes
+        ]
+        context = self.context(torch.cat(pooled, dim=1))
+        enhanced = context * self.spatial_weight(context)
+        return y + self.residual_scale * self.fuse(torch.cat((y, context, enhanced), dim=1))
 
 
 class C3k(C3):
