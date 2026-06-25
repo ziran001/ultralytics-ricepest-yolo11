@@ -43,6 +43,7 @@ __all__ = (
     "C3k2",
     "C3k2CSE",
     "MEN",
+    "BAFE",
     "FFE",
     "C2fPSA",
     "C2PSA",
@@ -838,6 +839,75 @@ class MEN(nn.Module):
         features = list(self.cv1(x).chunk(2, dim=1))
         features.extend(block(features[-1]) for block in self.m)
         return self.cv2(torch.cat(features, dim=1))
+
+
+class HaarWaveletConv(nn.Module):
+    """Fixed Haar decomposition into one low-frequency and three high-frequency subbands."""
+
+    def __init__(self, channels: int):
+        """Register non-learnable Haar filters for grouped convolution."""
+        super().__init__()
+        filters = torch.tensor(
+            [
+                [[1.0, 1.0], [1.0, 1.0]],
+                [[-1.0, -1.0], [1.0, 1.0]],
+                [[-1.0, 1.0], [-1.0, 1.0]],
+                [[1.0, -1.0], [-1.0, 1.0]],
+            ]
+        ).div_(2.0)
+        self.channels = channels
+        self.register_buffer("weight", filters[:, None].repeat(channels, 1, 1, 1), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return low-frequency structure and fused directional high-frequency details."""
+        pad_h, pad_w = x.shape[-2] % 2, x.shape[-1] % 2
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="replicate")
+        bands = F.conv2d(x, self.weight, stride=2, groups=self.channels)
+        bands = bands.view(x.shape[0], self.channels, 4, bands.shape[-2], bands.shape[-1])
+        low = bands[:, :, 0]
+        high = bands[:, :, 1:].abs().mean(dim=2)
+        return low, high
+
+
+class BAFE(nn.Module):
+    """
+    Bi-branch Attention Feature Enhancement adapted from BEAM-YOLO.
+
+    The implementation follows the paper's fixed Haar decomposition and cascaded foreground-background attention.
+    It is reproduced from the published design because no official implementation was available.
+    """
+
+    def __init__(self, c1: int, c2: int, reduction: int = 16):
+        """Initialize Haar frequency separation and cascaded dual attention."""
+        super().__init__()
+        self.proj = Conv(c1, c2, 1, 1) if c1 != c2 else nn.Identity()
+        self.wavelet = HaarWaveletConv(c2)
+        hidden = max(c2 // reduction, 8)
+        self.foreground_attn = nn.Sequential(nn.Conv2d(2, 1, 7, padding=3, bias=False), nn.Sigmoid())
+        self.background_attn = nn.Sequential(
+            nn.Conv2d(c2, hidden, 1, bias=False),
+            nn.SiLU(),
+            nn.Conv2d(hidden, c2, 1, bias=False),
+            nn.Sigmoid(),
+        )
+        self.foreground_scale = nn.Parameter(torch.tensor(0.5))
+        self.background_scale = nn.Parameter(torch.tensor(0.5))
+        self.out = Conv(c2, c2, 3, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Enhance pest foreground details first, then refine them using low-frequency background context."""
+        y = self.proj(x)
+        low, high = self.wavelet(y)
+        foreground = torch.cat((high.mean(1, keepdim=True), high.amax(1, keepdim=True)), dim=1)
+        foreground = F.interpolate(
+            self.foreground_attn(foreground), size=y.shape[-2:], mode="bilinear", align_corners=False
+        )
+        background = F.adaptive_avg_pool2d(low, 1) + F.adaptive_max_pool2d(low, 1)
+        background = self.background_attn(background)
+        enhanced = y + self.foreground_scale * y * foreground
+        enhanced = enhanced + self.background_scale * enhanced * background
+        return y + self.out(enhanced)
 
 
 class FFE(nn.Module):
