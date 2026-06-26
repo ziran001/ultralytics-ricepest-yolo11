@@ -59,6 +59,7 @@ from .block import (
     RepC3,
     RepNCSPELAN4,
     RepVGGDW,
+    RGG,
     ResNetLayer,
     SCDown,
 )
@@ -122,6 +123,7 @@ __all__ = (
     "C2f",
     "C3k2",
     "C3k2CSE",
+    "RGG",
     "AAM",
     "MEN",
     "BAFE",

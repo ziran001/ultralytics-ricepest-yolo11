@@ -42,6 +42,7 @@ __all__ = (
     "CBLinear",
     "C3k2",
     "C3k2CSE",
+    "RGG",
     "AAM",
     "MEN",
     "BAFE",
@@ -756,6 +757,59 @@ class C3k2CSE(C3k2):
         """Forward pass through C3k2 followed by channel-spatial enhancement."""
         y = super().forward(x)
         return y + self.spatial_attn(self.channel_attn(y))
+
+
+class RGGConv(nn.Module):
+    """RepConv-GhostConv-GhostConv feature extractor adapted from Paddy-YOLO."""
+
+    def __init__(self, c1: int, c2: int):
+        """Build the RGGConv sequence: RepConv followed by two 3x3 GhostConv layers."""
+        super().__init__()
+        self.cv1 = RepConv(c1, c2, 3, 1)
+        self.cv2 = GhostConv(c2, c2, 3, 1)
+        self.cv3 = GhostConv(c2, c2, 3, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract richer local features with re-parameterized and ghost convolutions."""
+        return self.cv3(self.cv2(self.cv1(x)))
+
+
+class RGGBottleneck(nn.Module):
+    """Paddy-YOLO RGG bottleneck with optional local residual connection."""
+
+    def __init__(self, c1: int, c2: int, shortcut: bool = True):
+        """Initialize a lightweight RGG bottleneck."""
+        super().__init__()
+        self.cv = RGGConv(c1, c2)
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass with optional shortcut."""
+        y = self.cv(x)
+        return x + y if self.add else y
+
+
+class RGG(nn.Module):
+    """
+    CSP-style RGG module adapted from Paddy-YOLO for YOLO11.
+
+    Paddy-YOLO embeds an RGG bottleneck into YOLOv8 C2f. This version keeps YOLO11's C2f-style split-fuse topology
+    while replacing the repeated bottlenecks with RepConv-GhostConv-GhostConv feature extractors.
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = True, e: float = 0.5):
+        """Initialize the RGG module."""
+        super().__init__()
+        self.c = int(c2 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        self.m = nn.ModuleList(RGGBottleneck(self.c, self.c, shortcut) for _ in range(n))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Split features, apply repeated RGG bottlenecks, and fuse all stages."""
+        y = list(self.cv1(x).chunk(2, dim=1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, dim=1))
 
 
 class EdgeEnhancer(nn.Module):
