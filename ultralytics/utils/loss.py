@@ -9,7 +9,7 @@ from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import autocast
 
-from .metrics import bbox_inner_iou, bbox_iou, probiou
+from .metrics import bbox_inner_iou, bbox_inner_mpdiou, bbox_iou, bbox_mpdiou, probiou
 from .tal import bbox2dist
 
 
@@ -94,8 +94,10 @@ class BboxLoss(nn.Module):
     def __init__(self, reg_max=16, iou_loss="ciou", inner_iou_ratio=0.7):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
-        if iou_loss not in {"ciou", "inner_ciou"}:
-            raise ValueError(f"Unsupported IoU loss '{iou_loss}'. Expected 'ciou' or 'inner_ciou'.")
+        if iou_loss not in {"ciou", "inner_ciou", "mpdiou", "inner_mpdiou"}:
+            raise ValueError(
+                f"Unsupported IoU loss '{iou_loss}'. Expected 'ciou', 'inner_ciou', 'mpdiou', or 'inner_mpdiou'."
+            )
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
         self.iou_loss = iou_loss
         self.inner_iou_ratio = inner_iou_ratio
@@ -110,6 +112,15 @@ class BboxLoss(nn.Module):
                 ratio=self.inner_iou_ratio,
                 xywh=False,
                 CIoU=True,
+            )
+        elif self.iou_loss == "mpdiou":
+            iou = bbox_mpdiou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False)
+        elif self.iou_loss == "inner_mpdiou":
+            iou = bbox_inner_mpdiou(
+                pred_bboxes[fg_mask],
+                target_bboxes[fg_mask],
+                ratio=self.inner_iou_ratio,
+                xywh=False,
             )
         else:
             iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)

@@ -178,6 +178,77 @@ def bbox_inner_iou(box1, box2, ratio=0.7, xywh=True, CIoU=False, eps=1e-7):
     return inner_iou - (rho2 / c2 + v * alpha)
 
 
+def bbox_mpdiou(box1, box2, xywh=True, eps=1e-7):
+    """
+    Calculate MPDIoU between two aligned sets of boxes.
+
+    MPDIoU augments IoU with the normalized distances between the top-left and bottom-right corner points. The
+    normalization uses the diagonal of the smallest enclosing box, which keeps the loss scale stable for mixed-size
+    pest instances.
+    """
+    if xywh:
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+
+    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp_(0) * (
+        b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)
+    ).clamp_(0)
+    union = w1 * h1 + w2 * h2 - inter + eps
+    iou = inter / union
+
+    cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)
+    ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)
+    c2 = cw.pow(2) + ch.pow(2) + eps
+    d1 = (b2_x1 - b1_x1).pow(2) + (b2_y1 - b1_y1).pow(2)
+    d2 = (b2_x2 - b1_x2).pow(2) + (b2_y2 - b1_y2).pow(2)
+    return iou - d1 / c2 - d2 / c2
+
+
+def bbox_inner_mpdiou(box1, box2, ratio=0.7, xywh=True, eps=1e-7):
+    """Calculate Inner-MPDIoU using scaled auxiliary boxes plus original corner-distance penalties."""
+    if ratio <= 0:
+        raise ValueError(f"Inner-IoU ratio must be positive, but got {ratio}.")
+
+    if xywh:
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+        x1, y1 = (b1_x1 + b1_x2) / 2, (b1_y1 + b1_y2) / 2
+        x2, y2 = (b2_x1 + b2_x2) / 2, (b2_y1 + b2_y2) / 2
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+
+    inner_b1_x1, inner_b1_x2 = x1 - w1_ * ratio, x1 + w1_ * ratio
+    inner_b1_y1, inner_b1_y2 = y1 - h1_ * ratio, y1 + h1_ * ratio
+    inner_b2_x1, inner_b2_x2 = x2 - w2_ * ratio, x2 + w2_ * ratio
+    inner_b2_y1, inner_b2_y2 = y2 - h2_ * ratio, y2 + h2_ * ratio
+
+    inner_inter = (inner_b1_x2.minimum(inner_b2_x2) - inner_b1_x1.maximum(inner_b2_x1)).clamp_(0) * (
+        inner_b1_y2.minimum(inner_b2_y2) - inner_b1_y1.maximum(inner_b2_y1)
+    ).clamp_(0)
+    inner_union = w1 * h1 * ratio**2 + w2 * h2 * ratio**2 - inner_inter + eps
+    inner_iou = inner_inter / inner_union
+
+    cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)
+    ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)
+    c2 = cw.pow(2) + ch.pow(2) + eps
+    d1 = (b2_x1 - b1_x1).pow(2) + (b2_y1 - b1_y1).pow(2)
+    d2 = (b2_x2 - b1_x2).pow(2) + (b2_y2 - b1_y2).pow(2)
+    return inner_iou - d1 / c2 - d2 / c2
+
+
 def mask_iou(mask1, mask2, eps=1e-7):
     """
     Calculate masks IoU.
