@@ -48,6 +48,7 @@ from ultralytics.nn.modules import (
     Detect,
     DWConv,
     DWConvTranspose2d,
+    ELA,
     FFE,
     Focus,
     GhostBottleneck,
@@ -1061,7 +1062,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c2 = args[1] if args[3] else args[1] * 4
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
-        elif m is CBAM:
+        elif m in {CBAM, ELA}:
             args = [ch[f], *args]
             c2 = ch[f]
         elif m in {Concat, WeightedConcat}:

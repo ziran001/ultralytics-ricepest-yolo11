@@ -19,6 +19,7 @@ __all__ = (
     "ChannelAttention",
     "SpatialAttention",
     "CBAM",
+    "ELA",
     "Concat",
     "WeightedConcat",
     "RepConv",
@@ -318,6 +319,30 @@ class CBAM(nn.Module):
     def forward(self, x):
         """Applies the forward pass through C1 module."""
         return self.spatial_attention(self.channel_attention(x))
+
+
+class ELA(nn.Module):
+    """Efficient local attention using lightweight directional context encoding."""
+
+    def __init__(self, c1, kernel_size=7):
+        """Initialize ELA with horizontal and vertical 1D local attention."""
+        super().__init__()
+        assert kernel_size in {3, 5, 7, 9}, "kernel size must be 3, 5, 7, or 9"
+        padding = kernel_size // 2
+        self.conv_h = nn.Conv1d(c1, c1, kernel_size, padding=padding, groups=c1, bias=False)
+        self.conv_w = nn.Conv1d(c1, c1, kernel_size, padding=padding, groups=c1, bias=False)
+        self.gn_h = nn.GroupNorm(16 if c1 % 16 == 0 else 1, c1)
+        self.gn_w = nn.GroupNorm(16 if c1 % 16 == 0 else 1, c1)
+        self.act = nn.Sigmoid()
+
+    def forward(self, x):
+        """Apply efficient local attention to preserve small-object directional details."""
+        b, c, h, w = x.shape
+        x_h = x.mean(dim=3)
+        x_w = x.mean(dim=2)
+        a_h = self.act(self.gn_h(self.conv_h(x_h)).view(b, c, h, 1))
+        a_w = self.act(self.gn_w(self.conv_w(x_w)).view(b, c, 1, w))
+        return x * a_h * a_w
 
 
 class Concat(nn.Module):
