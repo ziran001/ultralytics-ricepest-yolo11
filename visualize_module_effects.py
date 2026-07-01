@@ -53,6 +53,28 @@ from ultralytics import YOLO
 
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+CLASS_ALIASES = {
+    "Chilo suppressalis": "C. suppressalis",
+    "Cnaphalocrocis medinalis": "C. medinalis",
+    "Rice plant hopper": "RPH",
+    "Ostrinia furnacalis": "O. furnacalis",
+    "Scirpophaga incertulas": "S. incertulas",
+    "Spodoptera frugiperda": "S. frugiperda",
+    "Spodoptera spp.": "Spodoptera",
+    "Sesamia inferens": "S. inferens",
+    "Anomala corpulenta": "A. corpulenta",
+    "Holotrichia diomphalia": "H. diomphalia",
+    "Hydrochara affinis": "H. affinis",
+    "Sirthenea flavipes": "S. flavipes",
+    "Naranga aenescens": "N. aenescens",
+    "copper-green chafer": "chafer",
+    "Anomala exoleta Fald": "A. exoleta",
+    "Plutella xylostella": "P. xylostella",
+    "Agrotis segetum": "A. segetum",
+    "Axylia putris": "A. putris",
+    "Athetis spp.": "Athetis",
+    "Helicoverpa armigera": "H. armigera",
+}
 
 
 def parse_model_spec(spec: str) -> Dict[str, str]:
@@ -96,6 +118,22 @@ def safe_name(name: str) -> str:
     return "".join(keep).strip("_") or "model"
 
 
+def class_name(names, class_id: int) -> str:
+    """Return a class name from Ultralytics names containers."""
+    if isinstance(names, dict):
+        return str(names.get(class_id, class_id))
+    if isinstance(names, (list, tuple)) and 0 <= class_id < len(names):
+        return str(names[class_id])
+    return str(class_id)
+
+
+def short_label(name: str, style: str = "short") -> str:
+    """Shorten long pest species names for compact paper figures."""
+    if style == "full":
+        return name
+    return CLASS_ALIASES.get(name, name)
+
+
 def load_yolo(spec: Dict[str, str]) -> YOLO:
     """Load a YOLO model from optional YAML and weights."""
     weights = spec["weights"]
@@ -116,6 +154,15 @@ def get_layer(model: YOLO, layer_index: int):
     if layer_index < 0 or layer_index >= len(layers):
         raise IndexError(f"Layer index {layer_index} out of range. Model has {len(layers)} layers.")
     return layers[layer_index]
+
+
+def model_names(model: YOLO):
+    """Return class names from a YOLO wrapper or its inner model."""
+    names = getattr(model, "names", None)
+    if names:
+        return names
+    inner = getattr(model, "model", None)
+    return getattr(inner, "names", {})
 
 
 def tensor_to_heatmap(feature: torch.Tensor, out_hw) -> np.ndarray:
@@ -155,18 +202,40 @@ def add_title(image_bgr: np.ndarray, title: str, height: int = 38) -> np.ndarray
     return canvas
 
 
-def add_caption(image_bgr: np.ndarray, caption: str, height: int = 34) -> np.ndarray:
+def split_caption(caption: str, width: int, scale: float, thickness: int) -> List[str]:
+    """Split a long caption into one or two centered lines."""
+    text_size, _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+    if text_size[0] <= width - 10:
+        return [caption]
+    if " " in caption:
+        first, second = caption.split(" ", 1)
+        return [first, second]
+    for token in ["+", "-", "_"]:
+        if token in caption:
+            left, right = caption.split(token, 1)
+            return [left + token, right]
+    mid = max(1, len(caption) // 2)
+    return [caption[:mid], caption[mid:]]
+
+
+def add_caption(image_bgr: np.ndarray, caption: str, height: int = 54) -> np.ndarray:
     """Add a bottom caption similar to paper comparison figures."""
     h, w = image_bgr.shape[:2]
     canvas = np.full((h + height, w, 3), 255, dtype=np.uint8)
     canvas[:h] = image_bgr
     cv2.rectangle(canvas, (0, h), (w, h + height), (255, 255, 255), -1)
-    scale = min(0.68, max(0.42, w / max(1, len(caption)) / 18.0))
+    scale = min(0.64, max(0.36, w / max(1, len(caption)) / 13.5))
     thickness = 1 if scale < 0.6 else 2
-    text_size, _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
-    x = max(6, (w - text_size[0]) // 2)
-    y = h + 23
-    cv2.putText(canvas, caption, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (35, 35, 35), thickness, cv2.LINE_AA)
+    lines = split_caption(caption, w, scale, thickness)
+    y0 = h + 21 if len(lines) == 1 else h + 18
+    for line_id, line in enumerate(lines[:2]):
+        while cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)[0][0] > w - 10 and scale > 0.28:
+            scale -= 0.02
+            thickness = 1
+        text_size, _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+        x = max(5, (w - text_size[0]) // 2)
+        y = y0 + line_id * 22
+        cv2.putText(canvas, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (35, 35, 35), thickness, cv2.LINE_AA)
     return canvas
 
 
@@ -189,6 +258,126 @@ def draw_error_markers(image_bgr: np.ndarray, markers: Dict[str, object]) -> np.
         cv2.ellipse(marked, center, axes, 0, 0, 360, (0, 255, 255), line_width)
 
     return marked
+
+
+def draw_box_with_label(
+    image_bgr: np.ndarray,
+    xyxy: List[float],
+    label: str,
+    color=(255, 255, 255),
+    label_bg=(255, 255, 255),
+    label_fg=(20, 35, 85),
+    show_label: bool = True,
+) -> None:
+    """Draw one detection box with a compact, clipped label."""
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = [int(round(float(v))) for v in xyxy]
+    x1 = max(0, min(w - 1, x1))
+    y1 = max(0, min(h - 1, y1))
+    x2 = max(0, min(w - 1, x2))
+    y2 = max(0, min(h - 1, y2))
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    line_width = max(2, int(round(min(h, w) / 420)))
+    cv2.rectangle(image_bgr, (x1, y1), (x2, y2), color, line_width)
+    if not show_label or not label:
+        return
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = max(0.34, min(0.52, min(h, w) / 1700))
+    thickness = 1
+    max_label_w = max(40, w - 8)
+    while cv2.getTextSize(label, font, scale, thickness)[0][0] > max_label_w and scale > 0.25:
+        scale -= 0.02
+    text_size, baseline = cv2.getTextSize(label, font, scale, thickness)
+    tw, th = text_size
+    pad_x, pad_y = 3, 3
+    label_w = tw + pad_x * 2
+    label_h = th + pad_y * 2 + baseline
+    lx1 = min(max(0, x1), max(0, w - label_w))
+    ly1 = y1 - label_h - 1
+    if ly1 < 0:
+        ly1 = min(h - label_h, y1 + 1)
+    ly2 = ly1 + label_h
+    lx2 = lx1 + label_w
+    overlay = image_bgr.copy()
+    cv2.rectangle(overlay, (lx1, ly1), (lx2, ly2), label_bg, -1)
+    cv2.addWeighted(overlay, 0.72, image_bgr, 0.28, 0, image_bgr)
+    cv2.rectangle(image_bgr, (lx1, ly1), (lx2, ly2), color, 1)
+    cv2.putText(image_bgr, label, (lx1 + pad_x, ly2 - pad_y - baseline), font, scale, label_fg, thickness, cv2.LINE_AA)
+
+
+def draw_predictions(result, label_style: str, show_labels: bool = True) -> np.ndarray:
+    """Draw prediction boxes with compact labels instead of Ultralytics default plot()."""
+    image = result.orig_img.copy()
+    boxes = result.boxes
+    if boxes is None or len(boxes) == 0:
+        return image
+    xyxy = boxes.xyxy.detach().cpu().numpy()
+    cls = boxes.cls.detach().cpu().numpy().astype(int)
+    conf = boxes.conf.detach().cpu().numpy()
+    areas = (xyxy[:, 2] - xyxy[:, 0]) * (xyxy[:, 3] - xyxy[:, 1])
+    order = np.argsort(-areas)
+    for i in order:
+        name = short_label(class_name(result.names, int(cls[i])), label_style)
+        label = f"{name} {conf[i]:.2f}"
+        draw_box_with_label(
+            image,
+            xyxy[i].tolist(),
+            label,
+            color=(255, 255, 255),
+            label_bg=(255, 255, 255),
+            label_fg=(20, 35, 85),
+            show_label=show_labels,
+        )
+    return image
+
+
+def find_label_path(image_path: Path) -> Optional[Path]:
+    """Find a YOLO txt label stored beside the image or in a sibling labels directory."""
+    same_dir = image_path.with_suffix(".txt")
+    if same_dir.exists():
+        return same_dir
+    parts = list(image_path.parts)
+    if "images" in parts:
+        idx = len(parts) - 1 - parts[::-1].index("images")
+        label_parts = parts[:]
+        label_parts[idx] = "labels"
+        label_path = Path(*label_parts).with_suffix(".txt")
+        if label_path.exists():
+            return label_path
+    return None
+
+
+def draw_ground_truth(image_bgr: np.ndarray, image_path: Path, names, label_style: str, show_labels: bool = True) -> np.ndarray:
+    """Draw YOLO-format ground-truth labels for the original-image panel."""
+    label_path = find_label_path(image_path)
+    if label_path is None:
+        return image_bgr
+    image = image_bgr.copy()
+    h, w = image.shape[:2]
+    for line in label_path.read_text(encoding="utf-8").splitlines():
+        parts = line.strip().split()
+        if len(parts) < 5:
+            continue
+        cls_id = int(float(parts[0]))
+        x, y, bw, bh = map(float, parts[1:5])
+        x1 = (x - bw / 2) * w
+        y1 = (y - bh / 2) * h
+        x2 = (x + bw / 2) * w
+        y2 = (y + bh / 2) * h
+        label = short_label(class_name(names, cls_id), label_style)
+        draw_box_with_label(
+            image,
+            [x1, y1, x2, y2],
+            label,
+            color=(0, 210, 255),
+            label_bg=(255, 255, 255),
+            label_fg=(10, 45, 65),
+            show_label=show_labels,
+        )
+    return image
 
 
 def resize_to_width(image_bgr: np.ndarray, width: int) -> np.ndarray:
@@ -275,6 +464,8 @@ def run_one_model(
     conf: float,
     iou: float,
     device: str,
+    label_style: str,
+    show_labels: bool,
 ):
     """Run prediction with a hook and return detection, feature heatmap, and overlay images."""
     captured: Dict[str, torch.Tensor] = {}
@@ -299,7 +490,7 @@ def run_one_model(
         raise RuntimeError(f"No prediction result for {image_path}")
     result = results[0]
     original_bgr = result.orig_img.copy()
-    det_bgr = result.plot()
+    det_bgr = draw_predictions(result, label_style=label_style, show_labels=show_labels)
     if "feature" not in captured:
         raise RuntimeError(f"Layer {layer_index} did not capture any feature for {image_path}")
     heat_gray = tensor_to_heatmap(captured["feature"], original_bgr.shape[:2])
@@ -384,6 +575,8 @@ def main() -> None:
     parser.add_argument("--tile-width", default=300, type=int, help="Width of each model tile in the montage.")
     parser.add_argument("--save-single", action="store_true", help="Also save each individual model image.")
     parser.add_argument("--mark-json", default=None, type=Path, help="Optional manual miss/false-positive marker JSON.")
+    parser.add_argument("--label-style", default="short", choices=["short", "full"], help="Detection label style.")
+    parser.add_argument("--hide-det-labels", action="store_true", help="Draw boxes without class/conf text labels.")
     parser.add_argument(
         "--save-old-combined",
         action="store_true",
@@ -405,6 +598,7 @@ def main() -> None:
         loaded.append((model_name, model, layer_index))
         all_weights[model_name] = extract_weighted_concat_weights(model)
     write_json(args.out / "weighted_concat_weights.json", all_weights)
+    gt_names = model_names(loaded[0][1]) if loaded else {}
 
     for image_path in image_paths:
         stem = image_path.stem
@@ -413,6 +607,13 @@ def main() -> None:
             per_image_dir.mkdir(parents=True, exist_ok=True)
 
         original_bgr = read_original_image(image_path)
+        original_annotated = draw_ground_truth(
+            original_bgr,
+            image_path,
+            gt_names,
+            label_style=args.label_style,
+            show_labels=not args.hide_det_labels,
+        )
         model_names: List[str] = []
         detections: List[np.ndarray] = []
         features: List[np.ndarray] = []
@@ -420,7 +621,17 @@ def main() -> None:
 
         for model_name, model, layer_index in loaded:
             print(f"[{stem}] {model_name}: layer={layer_index}")
-            det, feature, overlay = run_one_model(model, image_path, layer_index, args.imgsz, args.conf, args.iou, args.device)
+            det, feature, overlay = run_one_model(
+                model,
+                image_path,
+                layer_index,
+                args.imgsz,
+                args.conf,
+                args.iou,
+                args.device,
+                label_style=args.label_style,
+                show_labels=not args.hide_det_labels,
+            )
             det = draw_error_markers(det, get_markers(marker_data, stem, model_name))
             model_names.append(model_name)
             detections.append(det)
@@ -435,7 +646,7 @@ def main() -> None:
 
         save_detection_figure(
             args.out / f"{stem}_detection_comparison.jpg",
-            original_bgr,
+            original_annotated,
             detections,
             model_names,
             args.tile_width,
