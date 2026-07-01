@@ -75,6 +75,36 @@ CLASS_ALIASES = {
     "Athetis spp.": "Athetis",
     "Helicoverpa armigera": "H. armigera",
 }
+CLASS_COLORS_BGR = [
+    (91, 64, 255),
+    (60, 210, 80),
+    (0, 205, 255),
+    (180, 120, 255),
+    (64, 128, 255),
+    (80, 180, 220),
+    (180, 180, 60),
+    (220, 120, 60),
+    (128, 180, 80),
+    (220, 90, 170),
+    (80, 200, 200),
+    (120, 120, 255),
+    (150, 210, 100),
+    (255, 170, 60),
+    (190, 140, 80),
+    (120, 80, 220),
+    (80, 160, 255),
+    (100, 220, 160),
+    (180, 90, 120),
+    (220, 180, 90),
+    (90, 180, 230),
+    (150, 100, 220),
+    (220, 60, 220),
+]
+CLASS_COLOR_OVERRIDES_BGR = {
+    "Chilo suppressalis": (60, 210, 80),
+    "Cnaphalocrocis medinalis": (0, 205, 255),
+    "Rice plant hopper": (220, 60, 220),
+}
 
 
 def parse_model_spec(spec: str) -> Dict[str, str]:
@@ -132,6 +162,20 @@ def short_label(name: str, style: str = "short") -> str:
     if style == "full":
         return name
     return CLASS_ALIASES.get(name, name)
+
+
+def class_color_bgr(name: str, class_id: int) -> tuple:
+    """Return a stable BGR color for a class."""
+    if name in CLASS_COLOR_OVERRIDES_BGR:
+        return CLASS_COLOR_OVERRIDES_BGR[name]
+    return CLASS_COLORS_BGR[class_id % len(CLASS_COLORS_BGR)]
+
+
+def readable_text_color(bg_bgr: tuple) -> tuple:
+    """Choose black or white text according to background brightness."""
+    b, g, r = bg_bgr
+    luminance = 0.114 * b + 0.587 * g + 0.299 * r
+    return (20, 20, 20) if luminance > 155 else (255, 255, 255)
 
 
 def load_yolo(spec: Dict[str, str]) -> YOLO:
@@ -264,9 +308,9 @@ def draw_box_with_label(
     image_bgr: np.ndarray,
     xyxy: List[float],
     label: str,
-    color=(255, 255, 255),
-    label_bg=(255, 255, 255),
-    label_fg=(20, 35, 85),
+    color=(60, 210, 80),
+    label_bg=None,
+    label_fg=None,
     show_label: bool = True,
 ) -> None:
     """Draw one detection box with a compact, clipped label."""
@@ -284,8 +328,10 @@ def draw_box_with_label(
     if not show_label or not label:
         return
 
+    label_bg = color if label_bg is None else label_bg
+    label_fg = readable_text_color(label_bg) if label_fg is None else label_fg
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = max(0.34, min(0.52, min(h, w) / 1700))
+    scale = max(0.32, min(0.48, min(h, w) / 1850))
     thickness = 1
     max_label_w = max(40, w - 8)
     while cv2.getTextSize(label, font, scale, thickness)[0][0] > max_label_w and scale > 0.25:
@@ -304,7 +350,7 @@ def draw_box_with_label(
     overlay = image_bgr.copy()
     cv2.rectangle(overlay, (lx1, ly1), (lx2, ly2), label_bg, -1)
     cv2.addWeighted(overlay, 0.72, image_bgr, 0.28, 0, image_bgr)
-    cv2.rectangle(image_bgr, (lx1, ly1), (lx2, ly2), color, 1)
+    cv2.rectangle(image_bgr, (lx1, ly1), (lx2, ly2), label_bg, 1)
     cv2.putText(image_bgr, label, (lx1 + pad_x, ly2 - pad_y - baseline), font, scale, label_fg, thickness, cv2.LINE_AA)
 
 
@@ -320,15 +366,15 @@ def draw_predictions(result, label_style: str, show_labels: bool = True) -> np.n
     areas = (xyxy[:, 2] - xyxy[:, 0]) * (xyxy[:, 3] - xyxy[:, 1])
     order = np.argsort(-areas)
     for i in order:
-        name = short_label(class_name(result.names, int(cls[i])), label_style)
+        full_name = class_name(result.names, int(cls[i]))
+        name = short_label(full_name, label_style)
         label = f"{name} {conf[i]:.2f}"
+        color = class_color_bgr(full_name, int(cls[i]))
         draw_box_with_label(
             image,
             xyxy[i].tolist(),
             label,
-            color=(255, 255, 255),
-            label_bg=(255, 255, 255),
-            label_fg=(20, 35, 85),
+            color=color,
             show_label=show_labels,
         )
     return image
@@ -367,14 +413,14 @@ def draw_ground_truth(image_bgr: np.ndarray, image_path: Path, names, label_styl
         y1 = (y - bh / 2) * h
         x2 = (x + bw / 2) * w
         y2 = (y + bh / 2) * h
-        label = short_label(class_name(names, cls_id), label_style)
+        full_name = class_name(names, cls_id)
+        label = short_label(full_name, label_style)
+        color = class_color_bgr(full_name, cls_id)
         draw_box_with_label(
             image,
             [x1, y1, x2, y2],
             label,
-            color=(0, 210, 255),
-            label_bg=(255, 255, 255),
-            label_fg=(10, 45, 65),
+            color=color,
             show_label=show_labels,
         )
     return image
@@ -562,6 +608,27 @@ def save_feature_heatmap_figure(
     cv2.imwrite(str(out_path), figure)
 
 
+def save_asset_set(
+    asset_dir: Path,
+    original_bgr: np.ndarray,
+    original_annotated: np.ndarray,
+    detections: List[np.ndarray],
+    features: List[np.ndarray],
+    overlays: List[np.ndarray],
+    det_model_names: List[str],
+    tile_width: int,
+) -> None:
+    """Save individual materials for manual PPT composition."""
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(asset_dir / "00_original_clean.jpg"), resize_to_width(original_bgr, tile_width))
+    cv2.imwrite(str(asset_dir / "00_original_annotated.jpg"), resize_to_width(original_annotated, tile_width))
+    for i, (name, det, feature, overlay) in enumerate(zip(det_model_names, detections, features, overlays), start=1):
+        prefix = f"{i:02d}_{safe_name(name)}"
+        cv2.imwrite(str(asset_dir / f"{prefix}_detection.jpg"), resize_to_width(det, tile_width))
+        cv2.imwrite(str(asset_dir / f"{prefix}_feature_map.jpg"), resize_to_width(feature, tile_width))
+        cv2.imwrite(str(asset_dir / f"{prefix}_heatmap_overlay.jpg"), resize_to_width(overlay, tile_width))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate YOLO module-effect visualizations.")
     parser.add_argument("--source", required=True, type=Path, help="Image file or directory.")
@@ -577,6 +644,11 @@ def main() -> None:
     parser.add_argument("--mark-json", default=None, type=Path, help="Optional manual miss/false-positive marker JSON.")
     parser.add_argument("--label-style", default="short", choices=["short", "full"], help="Detection label style.")
     parser.add_argument("--hide-det-labels", action="store_true", help="Draw boxes without class/conf text labels.")
+    parser.add_argument(
+        "--make-comparison",
+        action="store_true",
+        help="Also save stitched comparison figures. By default only individual assets are saved.",
+    )
     parser.add_argument(
         "--save-old-combined",
         action="store_true",
@@ -602,9 +674,8 @@ def main() -> None:
 
     for image_path in image_paths:
         stem = image_path.stem
-        per_image_dir = args.out / stem
-        if args.save_single:
-            per_image_dir.mkdir(parents=True, exist_ok=True)
+        per_image_dir = args.out / f"{stem}_assets"
+        per_image_dir.mkdir(parents=True, exist_ok=True)
 
         original_bgr = read_original_image(image_path)
         original_annotated = draw_ground_truth(
@@ -644,21 +715,33 @@ def main() -> None:
                 cv2.imwrite(str(per_image_dir / f"{name}_feature_map.jpg"), resize_to_width(feature, args.tile_width))
                 cv2.imwrite(str(per_image_dir / f"{name}_heatmap_overlay.jpg"), resize_to_width(overlay, args.tile_width))
 
-        save_detection_figure(
-            args.out / f"{stem}_detection_comparison.jpg",
+        save_asset_set(
+            per_image_dir,
+            original_bgr,
             original_annotated,
             detections,
-            det_model_names,
-            args.tile_width,
-        )
-        save_feature_heatmap_figure(
-            args.out / f"{stem}_feature_heatmap_comparison.jpg",
-            original_bgr,
             features,
             overlays,
             det_model_names,
             args.tile_width,
         )
+
+        if args.make_comparison:
+            save_detection_figure(
+                args.out / f"{stem}_detection_comparison.jpg",
+                original_annotated,
+                detections,
+                det_model_names,
+                args.tile_width,
+            )
+            save_feature_heatmap_figure(
+                args.out / f"{stem}_feature_heatmap_comparison.jpg",
+                original_bgr,
+                features,
+                overlays,
+                det_model_names,
+                args.tile_width,
+            )
 
         if args.save_old_combined:
             detection_row = [
