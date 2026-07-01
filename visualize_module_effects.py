@@ -156,7 +156,7 @@ def get_layer(model: YOLO, layer_index: int):
     return layers[layer_index]
 
 
-def model_names(model: YOLO):
+def get_model_names(model: YOLO):
     """Return class names from a YOLO wrapper or its inner model."""
     names = getattr(model, "names", None)
     if names:
@@ -525,14 +525,14 @@ def save_detection_figure(
     out_path: Path,
     original_bgr: np.ndarray,
     detections: List[np.ndarray],
-    model_names: List[str],
+    det_model_names: List[str],
     tile_width: int,
 ) -> None:
     """Save a paper-style detection comparison figure."""
     panels: List[np.ndarray] = []
     original_panel = resize_to_width(original_bgr, tile_width)
     panels.append(add_caption(original_panel, f"{letter_label(0)} Original"))
-    for i, (det, name) in enumerate(zip(detections, model_names), start=1):
+    for i, (det, name) in enumerate(zip(detections, det_model_names), start=1):
         det_panel = resize_to_width(det, tile_width)
         panels.append(add_caption(det_panel, f"{letter_label(i)} {name}"))
     figure = make_grid([panels], gap=14)
@@ -544,7 +544,7 @@ def save_feature_heatmap_figure(
     original_bgr: np.ndarray,
     features: List[np.ndarray],
     overlays: List[np.ndarray],
-    model_names: List[str],
+    det_model_names: List[str],
     tile_width: int,
 ) -> None:
     """Save a two-row feature-map and heatmap-overlay comparison figure."""
@@ -552,7 +552,7 @@ def save_feature_heatmap_figure(
     first_row: List[np.ndarray] = [add_title(original_panel, "Original")]
     second_row: List[np.ndarray] = [add_title(original_panel, "Original")]
 
-    for feature, overlay, name in zip(features, overlays, model_names):
+    for feature, overlay, name in zip(features, overlays, det_model_names):
         feature_panel = resize_to_width(feature, tile_width)
         overlay_panel = resize_to_width(overlay, tile_width)
         first_row.append(add_title(feature_panel, f"{name} | Feature map"))
@@ -598,7 +598,7 @@ def main() -> None:
         loaded.append((model_name, model, layer_index))
         all_weights[model_name] = extract_weighted_concat_weights(model)
     write_json(args.out / "weighted_concat_weights.json", all_weights)
-    gt_names = model_names(loaded[0][1]) if loaded else {}
+    gt_names = get_model_names(loaded[0][1]) if loaded else {}
 
     for image_path in image_paths:
         stem = image_path.stem
@@ -614,7 +614,7 @@ def main() -> None:
             label_style=args.label_style,
             show_labels=not args.hide_det_labels,
         )
-        model_names: List[str] = []
+        det_model_names: List[str] = []
         detections: List[np.ndarray] = []
         features: List[np.ndarray] = []
         overlays: List[np.ndarray] = []
@@ -633,7 +633,7 @@ def main() -> None:
                 show_labels=not args.hide_det_labels,
             )
             det = draw_error_markers(det, get_markers(marker_data, stem, model_name))
-            model_names.append(model_name)
+            det_model_names.append(model_name)
             detections.append(det)
             features.append(feature)
             overlays.append(overlay)
@@ -648,7 +648,7 @@ def main() -> None:
             args.out / f"{stem}_detection_comparison.jpg",
             original_annotated,
             detections,
-            model_names,
+            det_model_names,
             args.tile_width,
         )
         save_feature_heatmap_figure(
@@ -656,22 +656,22 @@ def main() -> None:
             original_bgr,
             features,
             overlays,
-            model_names,
+            det_model_names,
             args.tile_width,
         )
 
         if args.save_old_combined:
             detection_row = [
                 add_title(resize_to_width(det, args.tile_width), f"{name} | Detection")
-                for det, name in zip(detections, model_names)
+                for det, name in zip(detections, det_model_names)
             ]
             feature_row = [
                 add_title(resize_to_width(feature, args.tile_width), f"{name} | Feature map")
-                for feature, name in zip(features, model_names)
+                for feature, name in zip(features, det_model_names)
             ]
             overlay_row = [
                 add_title(resize_to_width(overlay, args.tile_width), f"{name} | Heatmap overlay")
-                for overlay, name in zip(overlays, model_names)
+                for overlay, name in zip(overlays, det_model_names)
             ]
             montage = make_grid([detection_row, feature_row, overlay_row])
             cv2.imwrite(str(args.out / f"{stem}_module_effects.jpg"), montage)
