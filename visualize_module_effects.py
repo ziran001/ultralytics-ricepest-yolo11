@@ -2,10 +2,9 @@
 Visualize why YOLO11 improvement modules help.
 
 This script compares multiple YOLO models on the same images and exports:
-1. detection-result comparison;
-2. feature-map heatmaps from a selected layer;
-3. heatmap overlays on the original image;
-4. learned WeightedConcat weights for Weighted-P3Fusion-style modules.
+1. a detection-result comparison figure;
+2. a feature-map and heatmap-overlay comparison figure;
+3. learned WeightedConcat weights for Weighted-P3Fusion-style modules.
 
 Example on the AutoDL server:
 
@@ -19,6 +18,20 @@ python visualize_module_effects.py \
   --model "name=MEN(P3),yaml=/root/ultralytics-8.3.27/ultralytics/cfg/models/11/yolo11-men-p3.yaml,weights=/root/ultralytics-8.3.27/runs/train/yolo11_men-p3_seed1_mixed_dataset/weights/best.pt,layer=4" \
   --model "name=MEN+Weighted-P3Fusion,yaml=/root/ultralytics-8.3.27/ultralytics/cfg/models/11/yolo11-men-p3-weighted-p3fusion.yaml,weights=/root/ultralytics-8.3.27/runs/train/yolo11_men-p3_weighted-p3fusion_pretrained_mixed_dataset/weights/best.pt,layer=16"
 
+Main outputs:
+- *_detection_comparison.jpg: (a) original image, followed by (b), (c), ... model detections.
+- *_feature_heatmap_comparison.jpg: first row feature maps, second row heatmap overlays.
+
+Optional miss/false-positive marker JSON format:
+{
+  "image_stem": {
+    "Model name": {
+      "miss": [[x1, y1, x2, y2]],
+      "false_positive": [[x1, y1, x2, y2]]
+    }
+  }
+}
+
 Notes:
 - For MEN(P3), layer=4 visualizes the P3/8 backbone output after MEN.
 - For Weighted-P3Fusion, layer=16 usually visualizes the P3 branch after the weighted fusion and following C3k2.
@@ -30,7 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -142,6 +155,42 @@ def add_title(image_bgr: np.ndarray, title: str, height: int = 38) -> np.ndarray
     return canvas
 
 
+def add_caption(image_bgr: np.ndarray, caption: str, height: int = 34) -> np.ndarray:
+    """Add a bottom caption similar to paper comparison figures."""
+    h, w = image_bgr.shape[:2]
+    canvas = np.full((h + height, w, 3), 255, dtype=np.uint8)
+    canvas[:h] = image_bgr
+    cv2.rectangle(canvas, (0, h), (w, h + height), (255, 255, 255), -1)
+    scale = min(0.68, max(0.42, w / max(1, len(caption)) / 18.0))
+    thickness = 1 if scale < 0.6 else 2
+    text_size, _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+    x = max(6, (w - text_size[0]) // 2)
+    y = h + 23
+    cv2.putText(canvas, caption, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (35, 35, 35), thickness, cv2.LINE_AA)
+    return canvas
+
+
+def draw_error_markers(image_bgr: np.ndarray, markers: Dict[str, object]) -> np.ndarray:
+    """Draw red rectangles for misses and yellow ellipses for false positives."""
+    if not markers:
+        return image_bgr
+    marked = image_bgr.copy()
+    h, w = marked.shape[:2]
+    line_width = max(2, int(round(min(h, w) / 260)))
+
+    for box in markers.get("miss", []):
+        x1, y1, x2, y2 = [int(round(float(v))) for v in box]
+        cv2.rectangle(marked, (x1, y1), (x2, y2), (0, 0, 255), line_width)
+
+    for box in markers.get("false_positive", []):
+        x1, y1, x2, y2 = [int(round(float(v))) for v in box]
+        center = ((x1 + x2) // 2, (y1 + y2) // 2)
+        axes = (max(4, abs(x2 - x1) // 2), max(4, abs(y2 - y1) // 2))
+        cv2.ellipse(marked, center, axes, 0, 0, 360, (0, 255, 255), line_width)
+
+    return marked
+
+
 def resize_to_width(image_bgr: np.ndarray, width: int) -> np.ndarray:
     """Resize an image to a fixed width while keeping aspect ratio."""
     h, w = image_bgr.shape[:2]
@@ -183,6 +232,14 @@ def make_grid(rows: List[List[np.ndarray]], gap: int = 8) -> np.ndarray:
     return montage
 
 
+def letter_label(index: int) -> str:
+    """Return paper-style labels: (a), (b), ..."""
+    alphabet = "abcdefghijklmnopqrstuvwxyz"
+    if index < len(alphabet):
+        return f"({alphabet[index]})"
+    return f"({index + 1})"
+
+
 def extract_weighted_concat_weights(model: YOLO) -> List[Dict[str, object]]:
     """Extract normalized weights from all WeightedConcat modules in a model."""
     data: List[Dict[str, object]] = []
@@ -200,6 +257,14 @@ def extract_weighted_concat_weights(model: YOLO) -> List[Dict[str, object]]:
             }
         )
     return data
+
+
+def read_original_image(image_path: Path) -> np.ndarray:
+    """Read the original image in BGR format."""
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise FileNotFoundError(f"Failed to read image: {image_path}")
+    return image
 
 
 def run_one_model(
@@ -249,6 +314,63 @@ def write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def read_marker_json(path: Optional[Path]) -> Dict[str, object]:
+    """Read optional manual miss/false-positive markers."""
+    if path is None:
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def get_markers(marker_data: Dict[str, object], image_stem: str, model_name: str) -> Dict[str, object]:
+    """Return markers for one image/model, supporting exact and safe-name keys."""
+    image_data = marker_data.get(image_stem, {})
+    if not isinstance(image_data, dict):
+        return {}
+    model_data = image_data.get(model_name) or image_data.get(safe_name(model_name)) or {}
+    return model_data if isinstance(model_data, dict) else {}
+
+
+def save_detection_figure(
+    out_path: Path,
+    original_bgr: np.ndarray,
+    detections: List[np.ndarray],
+    model_names: List[str],
+    tile_width: int,
+) -> None:
+    """Save a paper-style detection comparison figure."""
+    panels: List[np.ndarray] = []
+    original_panel = resize_to_width(original_bgr, tile_width)
+    panels.append(add_caption(original_panel, f"{letter_label(0)} Original"))
+    for i, (det, name) in enumerate(zip(detections, model_names), start=1):
+        det_panel = resize_to_width(det, tile_width)
+        panels.append(add_caption(det_panel, f"{letter_label(i)} {name}"))
+    figure = make_grid([panels], gap=14)
+    cv2.imwrite(str(out_path), figure)
+
+
+def save_feature_heatmap_figure(
+    out_path: Path,
+    original_bgr: np.ndarray,
+    features: List[np.ndarray],
+    overlays: List[np.ndarray],
+    model_names: List[str],
+    tile_width: int,
+) -> None:
+    """Save a two-row feature-map and heatmap-overlay comparison figure."""
+    original_panel = resize_to_width(original_bgr, tile_width)
+    first_row: List[np.ndarray] = [add_title(original_panel, "Original")]
+    second_row: List[np.ndarray] = [add_title(original_panel, "Original")]
+
+    for feature, overlay, name in zip(features, overlays, model_names):
+        feature_panel = resize_to_width(feature, tile_width)
+        overlay_panel = resize_to_width(overlay, tile_width)
+        first_row.append(add_title(feature_panel, f"{name} | Feature map"))
+        second_row.append(add_title(overlay_panel, f"{name} | Heatmap overlay"))
+
+    figure = make_grid([first_row, second_row], gap=10)
+    cv2.imwrite(str(out_path), figure)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate YOLO module-effect visualizations.")
     parser.add_argument("--source", required=True, type=Path, help="Image file or directory.")
@@ -261,11 +383,18 @@ def main() -> None:
     parser.add_argument("--max-images", default=12, type=int, help="Maximum number of images to visualize.")
     parser.add_argument("--tile-width", default=300, type=int, help="Width of each model tile in the montage.")
     parser.add_argument("--save-single", action="store_true", help="Also save each individual model image.")
+    parser.add_argument("--mark-json", default=None, type=Path, help="Optional manual miss/false-positive marker JSON.")
+    parser.add_argument(
+        "--save-old-combined",
+        action="store_true",
+        help="Also save the old three-row combined figure named *_module_effects.jpg.",
+    )
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
     image_paths = iter_images(args.source)[: args.max_images]
     specs = [parse_model_spec(s) for s in args.model]
+    marker_data = read_marker_json(args.mark_json)
 
     loaded = []
     all_weights: Dict[str, object] = {}
@@ -283,29 +412,58 @@ def main() -> None:
         if args.save_single:
             per_image_dir.mkdir(parents=True, exist_ok=True)
 
-        detection_row: List[np.ndarray] = []
-        feature_row: List[np.ndarray] = []
-        overlay_row: List[np.ndarray] = []
+        original_bgr = read_original_image(image_path)
+        model_names: List[str] = []
+        detections: List[np.ndarray] = []
+        features: List[np.ndarray] = []
+        overlays: List[np.ndarray] = []
 
         for model_name, model, layer_index in loaded:
             print(f"[{stem}] {model_name}: layer={layer_index}")
             det, feature, overlay = run_one_model(model, image_path, layer_index, args.imgsz, args.conf, args.iou, args.device)
-            det = resize_to_width(det, args.tile_width)
-            feature = resize_to_width(feature, args.tile_width)
-            overlay = resize_to_width(overlay, args.tile_width)
-
-            detection_row.append(add_title(det, f"{model_name} | Detection"))
-            feature_row.append(add_title(feature, f"{model_name} | Feature map"))
-            overlay_row.append(add_title(overlay, f"{model_name} | Heatmap overlay"))
+            det = draw_error_markers(det, get_markers(marker_data, stem, model_name))
+            model_names.append(model_name)
+            detections.append(det)
+            features.append(feature)
+            overlays.append(overlay)
 
             if args.save_single:
                 name = safe_name(model_name)
-                cv2.imwrite(str(per_image_dir / f"{name}_detection.jpg"), det)
-                cv2.imwrite(str(per_image_dir / f"{name}_feature_map.jpg"), feature)
-                cv2.imwrite(str(per_image_dir / f"{name}_heatmap_overlay.jpg"), overlay)
+                cv2.imwrite(str(per_image_dir / f"{name}_detection.jpg"), resize_to_width(det, args.tile_width))
+                cv2.imwrite(str(per_image_dir / f"{name}_feature_map.jpg"), resize_to_width(feature, args.tile_width))
+                cv2.imwrite(str(per_image_dir / f"{name}_heatmap_overlay.jpg"), resize_to_width(overlay, args.tile_width))
 
-        montage = make_grid([detection_row, feature_row, overlay_row])
-        cv2.imwrite(str(args.out / f"{stem}_module_effects.jpg"), montage)
+        save_detection_figure(
+            args.out / f"{stem}_detection_comparison.jpg",
+            original_bgr,
+            detections,
+            model_names,
+            args.tile_width,
+        )
+        save_feature_heatmap_figure(
+            args.out / f"{stem}_feature_heatmap_comparison.jpg",
+            original_bgr,
+            features,
+            overlays,
+            model_names,
+            args.tile_width,
+        )
+
+        if args.save_old_combined:
+            detection_row = [
+                add_title(resize_to_width(det, args.tile_width), f"{name} | Detection")
+                for det, name in zip(detections, model_names)
+            ]
+            feature_row = [
+                add_title(resize_to_width(feature, args.tile_width), f"{name} | Feature map")
+                for feature, name in zip(features, model_names)
+            ]
+            overlay_row = [
+                add_title(resize_to_width(overlay, args.tile_width), f"{name} | Heatmap overlay")
+                for overlay, name in zip(overlays, model_names)
+            ]
+            montage = make_grid([detection_row, feature_row, overlay_row])
+            cv2.imwrite(str(args.out / f"{stem}_module_effects.jpg"), montage)
 
     print(f"Saved visualizations to: {args.out.resolve()}")
     print(f"Saved WeightedConcat weights to: {(args.out / 'weighted_concat_weights.json').resolve()}")
