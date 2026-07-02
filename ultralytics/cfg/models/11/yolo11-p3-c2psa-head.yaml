@@ -1,6 +1,7 @@
 # Ultralytics YOLO, AGPL-3.0 license
 # YOLO11 with C2PSA refinement on the P3/8 small-object detection branch.
 # Strategy: keep original YOLO11 P3/P4/P5 heads, add one native C2PSA block only after the P3 head feature.
+# Note: e=1.0 is required for YOLO11n, otherwise hidden channels are too small and C2PSA gets zero attention heads.
 # Expected run name: yolo11_p3-c2psa-head_pretrained_mixed_dataset
 
 # Parameters
@@ -37,7 +38,7 @@ head:
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 4], 1, Concat, [1]] # cat backbone P3
   - [-1, 2, C3k2, [256, False]] # 16
-  - [-1, 1, C2PSA, [256]] # 17: refine P3/8 small-object features
+  - [-1, 1, C2PSA, [256, 1.0]] # 17: refine P3/8 small-object features; e=1.0 keeps num_heads >= 1 for n scale
 
   - [-1, 1, Conv, [256, 3, 2]]
   - [[-1, 13], 1, Concat, [1]] # cat head P4
