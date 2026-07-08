@@ -6,6 +6,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 __all__ = (
     "Conv",
@@ -22,6 +23,7 @@ __all__ = (
     "ELA",
     "Concat",
     "WeightedConcat",
+    "DySample",
     "RepConv",
 )
 
@@ -373,3 +375,99 @@ class WeightedConcat(nn.Module):
         w = torch.relu(self.w)
         w = w / (w.sum() + self.eps)
         return torch.cat([xi * w[i] for i, xi in enumerate(x)], self.d)
+
+
+class DySample(nn.Module):
+    """Dynamic upsampling with learnable sampling offsets.
+
+    This module follows the DySample idea from ICCV 2023 and can replace
+    ``nn.Upsample`` in YOLO necks while keeping the channel count unchanged.
+    """
+
+    def __init__(self, c1, scale=2, style="lp", groups=4, dyscope=False):
+        """Initialize DySample.
+
+        Args:
+            c1 (int): Input channels.
+            scale (int): Upsampling scale factor.
+            style (str): Sampling style, either "lp" or "pl".
+            groups (int): Group count used by grid sampling.
+            dyscope (bool): Whether to learn a dynamic offset scope.
+        """
+        super().__init__()
+        if style not in {"lp", "pl"}:
+            raise ValueError(f"DySample style must be 'lp' or 'pl', got {style!r}")
+        if style == "pl":
+            if c1 < scale**2 or c1 % scale**2 != 0:
+                raise ValueError("DySample style='pl' requires input channels divisible by scale^2.")
+            offset_channels = c1 // scale**2
+        else:
+            offset_channels = c1
+        if offset_channels < groups or offset_channels % groups != 0:
+            raise ValueError("DySample requires channels to be divisible by groups.")
+
+        self.scale = scale
+        self.style = style
+        self.groups = groups
+        self.offset = nn.Conv2d(offset_channels, 2 * groups * scale**2 if style == "lp" else 2 * groups, 1)
+        nn.init.normal_(self.offset.weight, std=0.001)
+        nn.init.constant_(self.offset.bias, 0)
+        if dyscope:
+            self.scope = nn.Conv2d(offset_channels, 2 * groups * scale**2 if style == "lp" else 2 * groups, 1)
+            nn.init.constant_(self.scope.weight, 0)
+            nn.init.constant_(self.scope.bias, 0)
+        else:
+            self.scope = None
+        self.register_buffer("init_pos", self._init_pos())
+
+    def _init_pos(self):
+        """Create the initial relative sampling positions."""
+        h = torch.arange((-self.scale + 1) / 2, (self.scale - 1) / 2 + 1) / self.scale
+        return (
+            torch.stack(torch.meshgrid([h, h], indexing="ij"))
+            .transpose(1, 2)
+            .repeat(1, self.groups, 1)
+            .reshape(1, -1, 1, 1)
+        )
+
+    def sample(self, x, offset):
+        """Sample input features according to learned offsets."""
+        b, _, h, w = offset.shape
+        offset = offset.view(b, 2, -1, h, w)
+        coords_h = torch.arange(h, dtype=x.dtype, device=x.device) + 0.5
+        coords_w = torch.arange(w, dtype=x.dtype, device=x.device) + 0.5
+        coords = torch.stack(torch.meshgrid([coords_w, coords_h], indexing="ij")).transpose(1, 2)
+        coords = coords.unsqueeze(1).unsqueeze(0)
+        normalizer = torch.tensor([w, h], dtype=x.dtype, device=x.device).view(1, 2, 1, 1, 1)
+        coords = 2 * (coords + offset) / normalizer - 1
+        coords = F.pixel_shuffle(coords.view(b, -1, h, w), self.scale)
+        coords = coords.view(b, 2, -1, self.scale * h, self.scale * w).permute(0, 2, 3, 4, 1).contiguous()
+        coords = coords.flatten(0, 1)
+        return F.grid_sample(
+            x.reshape(b * self.groups, -1, h, w),
+            coords,
+            mode="bilinear",
+            align_corners=False,
+            padding_mode="border",
+        ).view(b, -1, self.scale * h, self.scale * w)
+
+    def forward_lp(self, x):
+        """Forward pass for low-to-high position style."""
+        if self.scope is None:
+            offset = self.offset(x) * 0.25 + self.init_pos
+        else:
+            offset = self.offset(x) * self.scope(x).sigmoid() * 0.5 + self.init_pos
+        return self.sample(x, offset)
+
+    def forward_pl(self, x):
+        """Forward pass for pixel-shuffle position style."""
+        x_ = F.pixel_shuffle(x, self.scale)
+        if self.scope is None:
+            offset = F.pixel_unshuffle(self.offset(x_) * 0.25, self.scale) + self.init_pos
+        else:
+            offset = F.pixel_unshuffle(self.offset(x_) * self.scope(x_).sigmoid() * 0.5, self.scale) + self.init_pos
+        return self.sample(x, offset)
+
+    def forward(self, x):
+        """Apply dynamic upsampling."""
+        return self.forward_lp(x) if self.style == "lp" else self.forward_pl(x)
