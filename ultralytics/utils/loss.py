@@ -289,6 +289,106 @@ class v8DetectionLoss:
         return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl)
 
 
+class DAGGDetectionLoss(v8DetectionLoss):
+    """YOLO detection loss with a training-only density-aware Gaussian objective."""
+
+    def __init__(self, model):
+        """Initialize the base detection loss and read DAGG settings from the head."""
+        super().__init__(model)
+        head = model.model[-1]
+        self.dagg_loss_gain = head.dagg_loss_gain
+        self.dagg_sigma_scale = head.dagg_sigma_scale
+        self.dagg_min_sigma = head.dagg_min_sigma
+        self.dagg_size_reference = head.dagg_size_reference
+        self.dagg_max_size_weight = head.dagg_max_size_weight
+        self.dagg_density_gain = head.dagg_density_gain
+        self.dagg_density_radius = head.dagg_density_radius
+        self.dagg_background_gain = head.dagg_background_gain
+
+    def build_gaussian_targets(self, logits, batch):
+        """Build size-adaptive Gaussian targets and density-aware importance maps at P3 resolution."""
+        batch_size, _, height, width = logits.shape
+        target = torch.zeros((batch_size, 1, height, width), device=logits.device, dtype=torch.float32)
+        importance = torch.zeros_like(target)
+        boxes = batch["bboxes"].to(device=logits.device, dtype=torch.float32)
+        batch_idx = batch["batch_idx"].view(-1).to(device=logits.device, dtype=torch.long)
+        if boxes.numel() == 0:
+            return target, importance
+
+        grid_y = torch.arange(height, device=logits.device, dtype=torch.float32).view(1, height, 1)
+        grid_x = torch.arange(width, device=logits.device, dtype=torch.float32).view(1, 1, width)
+
+        for image_idx in range(batch_size):
+            image_boxes = boxes[batch_idx == image_idx]
+            if image_boxes.numel() == 0:
+                continue
+
+            centers = image_boxes[:, :2].clamp(0, 1)
+            sizes = image_boxes[:, 2:4].clamp_min(1e-6)
+            areas = sizes.prod(1)
+            size_weights = (self.dagg_size_reference / areas).sqrt().clamp(1.0, self.dagg_max_size_weight)
+
+            if len(image_boxes) > 1 and self.dagg_density_gain:
+                distances = torch.cdist(centers, centers)
+                neighbor_counts = (
+                    (distances < self.dagg_density_radius)
+                    & ~torch.eye(len(image_boxes), device=logits.device, dtype=torch.bool)
+                ).sum(1)
+                density_weights = 1.0 + self.dagg_density_gain * torch.log1p(neighbor_counts.float())
+            else:
+                density_weights = torch.ones_like(size_weights)
+            object_weights = size_weights * density_weights
+
+            center_x = (centers[:, 0] * width).clamp(0, width - 1).view(-1, 1, 1)
+            center_y = (centers[:, 1] * height).clamp(0, height - 1).view(-1, 1, 1)
+            sigma_x = (sizes[:, 0] * width * self.dagg_sigma_scale).clamp_min(self.dagg_min_sigma).view(-1, 1, 1)
+            sigma_y = (sizes[:, 1] * height * self.dagg_sigma_scale).clamp_min(self.dagg_min_sigma).view(-1, 1, 1)
+
+            gaussians = torch.exp(
+                -0.5 * (((grid_x - center_x) / sigma_x).square() + ((grid_y - center_y) / sigma_y).square())
+            )
+            target[image_idx, 0] = gaussians.amax(0)
+            importance[image_idx, 0] = (gaussians * object_weights.view(-1, 1, 1)).amax(0)
+
+        return target, importance
+
+    def gaussian_guidance_loss(self, logits, target, importance):
+        """Compute a foreground-balanced MSE so sparse Gaussian regions are not drowned by background."""
+        prediction = logits.float().sigmoid()
+        squared_error = (prediction - target).square()
+        foreground = target > 0.01
+        background = ~foreground
+
+        if foreground.any():
+            foreground_weights = 1.0 + importance[foreground]
+            foreground_loss = (squared_error[foreground] * foreground_weights).sum() / foreground_weights.sum()
+        else:
+            foreground_loss = squared_error.new_zeros(())
+        background_loss = squared_error[background].mean() if background.any() else squared_error.new_zeros(())
+        return foreground_loss + self.dagg_background_gain * background_loss
+
+    def __call__(self, preds, batch):
+        """Calculate detection and DAGG losses, returning a fourth item for logs."""
+        dagg_logits = None
+        if (
+            isinstance(preds, tuple)
+            and len(preds) == 2
+            and torch.is_tensor(preds[1])
+            and preds[1].ndim == 4
+            and preds[1].shape[1] == 1
+        ):
+            preds, dagg_logits = preds
+
+        total_loss, loss_items = super().__call__(preds, batch)
+        dagg_loss = torch.zeros((), device=self.device)
+        if dagg_logits is not None:
+            target, importance = self.build_gaussian_targets(dagg_logits, batch)
+            dagg_loss = self.gaussian_guidance_loss(dagg_logits, target, importance) * self.dagg_loss_gain
+            total_loss = total_loss + dagg_loss * dagg_logits.shape[0]
+
+        return total_loss, torch.cat((loss_items, dagg_loss.detach().view(1)))
+
+
 class v8SegmentationLoss(v8DetectionLoss):
     """Criterion class for computing training losses."""
 

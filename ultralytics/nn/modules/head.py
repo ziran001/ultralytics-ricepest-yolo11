@@ -15,7 +15,7 @@ from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect"
+__all__ = "Detect", "DAGGDetect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect"
 
 
 class Detect(nn.Module):
@@ -164,6 +164,53 @@ class Detect(nn.Module):
         scores, index = scores.flatten(1).topk(min(max_det, anchors))
         i = torch.arange(batch_size)[..., None]  # batch indices
         return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)
+
+
+class DAGGDetect(Detect):
+    """YOLO Detect head with training-only density-aware Gaussian guidance on P3."""
+
+    def __init__(
+        self,
+        nc=80,
+        loss_gain=0.25,
+        sigma_scale=0.25,
+        min_sigma=1.0,
+        size_reference=0.01,
+        max_size_weight=4.0,
+        density_gain=0.5,
+        density_radius=0.1,
+        background_gain=0.25,
+        ch=(),
+    ):
+        """Initialize the normal detection head plus a P3 auxiliary heatmap predictor."""
+        super().__init__(nc, ch)
+        if not ch:
+            raise ValueError("DAGGDetect requires P3-P5 input channels.")
+        if loss_gain < 0 or sigma_scale <= 0 or min_sigma <= 0:
+            raise ValueError("DAGGDetect loss_gain and sigma values must be valid.")
+        if size_reference <= 0 or max_size_weight < 1:
+            raise ValueError("DAGGDetect size_reference must be positive and max_size_weight >= 1.")
+        if density_gain < 0 or density_radius <= 0 or background_gain < 0:
+            raise ValueError("DAGGDetect density and background settings are invalid.")
+
+        hidden = max(ch[0] // 4, 16)
+        self.dagg_head = nn.Sequential(Conv(ch[0], hidden, 3), nn.Conv2d(hidden, 1, 1))
+        constant_(self.dagg_head[-1].bias, -4.595)
+
+        self.dagg_loss_gain = float(loss_gain)
+        self.dagg_sigma_scale = float(sigma_scale)
+        self.dagg_min_sigma = float(min_sigma)
+        self.dagg_size_reference = float(size_reference)
+        self.dagg_max_size_weight = float(max_size_weight)
+        self.dagg_density_gain = float(density_gain)
+        self.dagg_density_radius = float(density_radius)
+        self.dagg_background_gain = float(background_gain)
+
+    def forward(self, x):
+        """Return Gaussian logits only during training and keep inference identical to Detect."""
+        dagg_logits = self.dagg_head(x[0]) if self.training else None
+        detections = super().forward(x)
+        return (detections, dagg_logits) if self.training else detections
 
 
 class Segment(Detect):

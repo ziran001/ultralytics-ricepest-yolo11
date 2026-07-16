@@ -2,6 +2,13 @@
 
 Copy the matching lines into `train_11.py`.
 
+## YOLO11 baseline + DAGG(P3, training-only)
+
+```python
+model = YOLO("/root/ultralytics-8.3.27/ultralytics/cfg/models/11/yolo11-dagg-p3.yaml")
+name="yolo11_dagg-p3_pretrained_mixed_dataset",
+```
+
 ## YOLO11 baseline + Inner-CIoU
 
 ```python

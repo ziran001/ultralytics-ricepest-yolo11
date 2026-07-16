@@ -81,7 +81,7 @@ from .conv import (
     SpatialAttention,
     WeightedConcat,
 )
-from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
+from .head import DAGGDetect, OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
 from .transformer import (
     AIFI,
     MLP,
@@ -144,6 +144,7 @@ __all__ = (
     "BottleneckCSP",
     "Proto",
     "Detect",
+    "DAGGDetect",
     "Segment",
     "Pose",
     "Classify",
