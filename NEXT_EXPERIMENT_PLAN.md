@@ -8,44 +8,45 @@ Recent structure changes showed limited and unstable gains:
 
 - `MEN(P3)` is still the most explainable structure-side improvement.
 - `Weighted-P3Fusion`, `P2Head`, and `P3-C2PSA` did not provide stable gains across overall metrics and the three priority pests.
-- `DAGG(P3, training-only)` is a positive training-supervision result, but it still needs parameter ablation before it should be stacked with other modules.
+- `DAGG(P3, gain=0.10)` is the current best DAGG variant for precision and high-IoU rice plant hopper localization, but it reduces overall recall.
 - Further stacking inference-time modules is not recommended before testing loss, training-supervision, and data strategies.
 
-The next stage should prioritize DAGG ablation, localization loss, and small-object data strategy.
+The next stage should prioritize DAGG `sigma_scale` ablation, then decide whether to combine DAGG with MEN(P3).
 
 ## Latest DAGG Result
 
-Model:
+Best DAGG model so far:
 
 ```text
-ultralytics/cfg/models/11/yolo11-dagg-p3.yaml
+ultralytics/cfg/models/11/yolo11-dagg-p3-gain010.yaml
 ```
 
 Run:
 
 ```text
-runs/train/yolo11_dagg-p3_pretrained_mixed_dataset
+runs/train/yolo11_dagg-p3_gain010_pretrained_mixed_dataset
 ```
 
 Summary:
 
 ```text
-YOLO11-dagg-p3 summary (fused): 242 layers, 2,595,886 parameters, 0 gradients, 6.3 GFLOPs
+YOLO11-dagg-p3-gain010 summary (fused): 242 layers, 2,595,886 parameters, 0 gradients, 6.3 GFLOPs
 ```
 
 | Class | P | R | mAP50 | mAP50-95 |
 |---|---:|---:|---:|---:|
-| all | 0.737 | 0.691 | 0.732 | 0.485 |
-| Chilo suppressalis | 0.846 | 0.861 | 0.905 | 0.609 |
-| Cnaphalocrocis medinalis | 0.796 | 0.793 | 0.808 | 0.567 |
-| Rice plant hopper | 0.870 | 0.900 | 0.928 | 0.733 |
+| all | 0.766 | 0.677 | 0.733 | 0.485 |
+| Chilo suppressalis | 0.869 | 0.842 | 0.904 | 0.611 |
+| Cnaphalocrocis medinalis | 0.825 | 0.779 | 0.823 | 0.584 |
+| Rice plant hopper | 0.870 | 0.877 | 0.928 | 0.736 |
 
 Interpretation:
 
-- Compared with the YOLO11 baseline, DAGG improves all overall metrics.
-- The strongest class-level signal is `Rice plant hopper`, where `mAP50-95` reaches `0.733`.
-- `Chilo suppressalis` recall improves, but `mAP50-95` is still slightly below the baseline, so localization quality remains the key risk.
-- Because this is a single run, treat it as a promising direction rather than a final model choice.
+- Compared with the YOLO11 baseline, `gain=0.10` improves overall `P`, `mAP50`, and `mAP50-95`, but recall drops.
+- Compared with the original DAGG setting, `gain=0.10` raises precision and improves `Cnaphalocrocis medinalis` and `Rice plant hopper` localization.
+- `Rice plant hopper mAP50-95=0.736` is the strongest class-level signal so far.
+- `Chilo suppressalis mAP50-95=0.611` almost recovers the baseline, but its recall is lower than the original DAGG run.
+- Because this is a single run, treat it as a promising ablation result rather than a final model choice.
 
 ## Priority Metrics
 
@@ -72,6 +73,8 @@ Priority pest classes:
 ### 1. DAGG loss gain ablation
 
 Purpose: check whether the current Gaussian guidance is too weak or too strong.
+
+Status: `loss_gain=0.10` has been tested and is currently preferred over `0.25` for precision and high-IoU localization.
 
 Base model:
 
@@ -111,12 +114,27 @@ Primary decision signal:
 
 - keep the setting that improves `all mAP50-95` while recovering `Chilo suppressalis mAP50-95`;
 - reduce `loss_gain` if precision drops or the priority pest localization metrics regress.
+- defer `loss_gain=0.50` unless the following `sigma_scale` runs cannot recover recall.
 
 ### 2. DAGG sigma scale ablation
 
-Purpose: check whether the Gaussian target should be sharper or smoother.
+Purpose: check whether the `gain=0.10` Gaussian target should be sharper or smoother.
 
-After choosing the best `loss_gain`, run:
+Next run:
+
+```text
+ultralytics/cfg/models/11/yolo11-dagg-p3-gain010-sigma035.yaml
+```
+
+Suggested run name:
+
+```text
+yolo11_dagg-p3_gain010_sigma035_pretrained_mixed_dataset
+```
+
+After that, run `sigma015` only if `sigma035` hurts precision or localization.
+
+Candidate values:
 
 ```text
 sigma_scale = 0.15, 0.25, 0.35
@@ -128,20 +146,22 @@ Model files:
 ultralytics/cfg/models/11/yolo11-dagg-p3-sigma015.yaml
 ultralytics/cfg/models/11/yolo11-dagg-p3.yaml
 ultralytics/cfg/models/11/yolo11-dagg-p3-sigma035.yaml
+ultralytics/cfg/models/11/yolo11-dagg-p3-gain010-sigma035.yaml
 ```
 
 Suggested run names:
 
 ```text
 yolo11_dagg-p3_sigma015_pretrained_mixed_dataset
-yolo11_dagg-p3_sigma025_pretrained_mixed_dataset
+yolo11_dagg-p3_gain010_pretrained_mixed_dataset
 yolo11_dagg-p3_sigma035_pretrained_mixed_dataset
+yolo11_dagg-p3_gain010_sigma035_pretrained_mixed_dataset
 ```
 
 Primary decision signal:
 
-- smaller `sigma_scale` should help center precision if it does not hurt recall;
-- larger `sigma_scale` is preferred if the current setting over-concentrates supervision and hurts small-object matching.
+- larger `sigma_scale` is preferred if it recovers recall without reducing `all P` below the baseline;
+- smaller `sigma_scale` should be tried only if `sigma035` weakens localization or produces too many loose boxes.
 
 ### 3. DAGG density ablation
 

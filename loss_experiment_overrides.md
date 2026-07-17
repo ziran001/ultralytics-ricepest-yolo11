@@ -48,6 +48,13 @@ name="yolo11_dagg-p3_gain050_pretrained_mixed_dataset",
 
 Run this after selecting the best `loss_gain`. Change the model path to the matching YAML.
 
+Current next run after `gain010`:
+
+```python
+model = YOLO("/root/ultralytics-8.3.27/ultralytics/cfg/models/11/yolo11-dagg-p3-gain010-sigma035.yaml")
+name="yolo11_dagg-p3_gain010_sigma035_pretrained_mixed_dataset",
+```
+
 ```yaml
 # yolo11-dagg-p3-sigma015.yaml
 - [[16, 19, 22], 1, DAGGDetect, [nc, 0.25, 0.15, 1.0, 0.01, 4.0, 0.5, 0.1, 0.25]]
@@ -57,6 +64,9 @@ Run this after selecting the best `loss_gain`. Change the model path to the matc
 
 # yolo11-dagg-p3-sigma035.yaml
 - [[16, 19, 22], 1, DAGGDetect, [nc, 0.25, 0.35, 1.0, 0.01, 4.0, 0.5, 0.1, 0.25]]
+
+# yolo11-dagg-p3-gain010-sigma035.yaml
+- [[16, 19, 22], 1, DAGGDetect, [nc, 0.10, 0.35, 1.0, 0.01, 4.0, 0.5, 0.1, 0.25]]
 ```
 
 Suggested names:
