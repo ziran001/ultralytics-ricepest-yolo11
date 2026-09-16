@@ -20,7 +20,7 @@ settings = SETTINGS
 MODELS = ("YOLO", "YOLOWorld", "YOLOE", "NAS", "SAM", "FastSAM", "RTDETR", "LLM")
 PLATFORM_EXPORTS = ("Platform", "AsyncPlatform", "APIError", "APIConnectionError")
 
-__all__ = (
+__all__ = (  # noqa: PLE0604
     "__version__",
     "ASSETS",
     *MODELS,
@@ -31,6 +31,7 @@ __all__ = (
 )
 
 if TYPE_CHECKING:
+    # Enable hints for type checkers
     from ultralytics.models import LLM, YOLO, YOLOWorld, YOLOE, NAS, SAM, FastSAM, RTDETR  # noqa
     from ultralytics_platform import APIConnectionError, APIError, AsyncPlatform, Platform  # noqa: F401
 
@@ -47,9 +48,10 @@ def __getattr__(name: str):
 
 
 def __dir__():
-    """Extend dir() to include lazily available public classes for IDE autocompletion."""
+    """Extend dir() to include lazily available public names for IDE autocompletion."""
     return sorted(set(globals()) | set(MODELS) | set(PLATFORM_EXPORTS))
 
 
 if __name__ == "__main__":
     print(__version__)
+
