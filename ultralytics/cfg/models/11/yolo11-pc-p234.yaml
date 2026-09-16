@@ -1,4 +1,4 @@
-﻿# Ultralytics YOLO, AGPL-3.0 license
+# Ultralytics YOLO, AGPL-3.0 license
 # YOLO11 adapted from PC-YOLO11s detection-layer strategy.
 # Paper: PC-YOLO11s: A Lightweight and Effective Feature Extraction Method for Small Target Image Detection
 # DOI: 10.3390/s25020348
@@ -47,3 +47,5 @@ head:
   - [-1, 2, C3k2, [512, True]] # 20-P4/16-large
 
   - [[14, 17, 20], 1, Detect, [nc]] # Detect(P2, P3, P4)
+
+

@@ -1,4 +1,4 @@
-﻿# Ultralytics YOLO, AGPL-3.0 license
+# Ultralytics YOLO, AGPL-3.0 license
 # YOLO11 with lightweight CBAM refinement before the detection head.
 # Motivation: keep the stable YOLO11 P3/P4/P5 detection structure while filtering noisy pest-background features
 # at each final detection scale. This is a conservative head-side attention ablation after P2 detection degraded.
@@ -51,3 +51,5 @@ head:
   - [19, 1, CBAM, [7]] # 24: refine P4 detection feature
   - [22, 1, CBAM, [7]] # 25: refine P5 detection feature
   - [[23, 24, 25], 1, Detect, [nc]] # Detect(P3, P4, P5)
+
+

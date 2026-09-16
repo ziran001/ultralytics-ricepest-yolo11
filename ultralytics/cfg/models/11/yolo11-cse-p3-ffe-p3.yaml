@@ -43,3 +43,5 @@ head:
   - [-1, 2, C3k2, [1024, True]] # 23 (P5/32-large)
 
   - [[17, 20, 23], 1, Detect, [nc]] # Detect(P3-FFE, P4, P5)
+
+

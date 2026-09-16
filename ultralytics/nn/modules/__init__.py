@@ -1,20 +1,20 @@
-# Ultralytics YOLO 🚀, AGPL-3.0 license
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 """
-Ultralytics modules.
+Ultralytics neural network modules.
 
-Example:
-    Visualize a module with Netron.
-    ```python
-    from ultralytics.nn.modules import *
-    import torch
-    import os
+This module provides access to various neural network components used in Ultralytics models, including convolution
+blocks, attention mechanisms, transformer components, and detection/segmentation heads.
 
-    x = torch.ones(1, 128, 40, 40)
-    m = Conv(128, 128)
-    f = f"{m._get_name()}.onnx"
-    torch.onnx.export(m, x, f)
-    os.system(f"onnxslim {f} {f} && open {f}")  # pip install onnxslim
-    ```
+Examples:
+    Visualize a module with Netron
+    >>> from ultralytics.nn.modules import Conv
+    >>> import torch
+    >>> import subprocess
+    >>> x = torch.ones(1, 128, 40, 40)
+    >>> m = Conv(128, 128)
+    >>> f = f"{m._get_name()}.onnx"
+    >>> torch.onnx.export(m, x, f)
+    >>> subprocess.run(f"onnxslim {f} {f} && open {f}", shell=True, check=True)  # pip install onnxslim
 """
 
 from .block import (
@@ -30,6 +30,7 @@ from .block import (
     SPP,
     SPPELAN,
     SPPF,
+    A2C2f,
     AConv,
     AAM,
     ADown,
@@ -54,6 +55,7 @@ from .block import (
     HGBlock,
     HGStem,
     ImagePoolingAttn,
+    MaxSigmoidAttnBlock,
     MEN,
     Proto,
     RepC3,
@@ -62,6 +64,7 @@ from .block import (
     RGG,
     ResNetLayer,
     SCDown,
+    TorchVision,
 )
 from .conv import (
     CBAM,
@@ -76,12 +79,32 @@ from .conv import (
     ELA,
     Focus,
     GhostConv,
+    Index,
     LightConv,
     RepConv,
     SpatialAttention,
     WeightedConcat,
 )
-from .head import DAGGDetect, OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
+from .head import (
+    OBB,
+    OBB26,
+    Classify,
+    Depth,
+    Detect,
+    DAGGDetect,
+    LRPCHead,
+    Pose,
+    Pose26,
+    RTDETRDecoder,
+    Segment,
+    Segment26,
+    SemanticSegment,
+    WorldDetect,
+    YOLOEDetect,
+    YOLOESegment,
+    YOLOESegment26,
+    v10Detect,
+)
 from .transformer import (
     AIFI,
     MLP,
@@ -96,83 +119,97 @@ from .transformer import (
 )
 
 __all__ = (
+    "AIFI",
+    "C1",
+    "C2",
+    "C2PSA",
+    "C3",
+    "C3TR",
+    "CBAM",
+    "CIB",
+    "DFL",
+    "ELAN1",
+    "MLP",
+    "OBB",
+    "OBB26",
+    "PSA",
+    "SPP",
+    "SPPELAN",
+    "SPPF",
+    "A2C2f",
+    "AConv",
+    "AAM",
+    "ADown",
+    "Attention",
+    "BAFE",
+    "BNContrastiveHead",
+    "Bottleneck",
+    "BottleneckCSP",
+    "C2f",
+    "C2fAttn",
+    "C2fCIB",
+    "C2fPSA",
+    "C3Ghost",
+    "C3k2",
+    "C3k2CSE",
+    "C3x",
+    "CBFuse",
+    "CBLinear",
+    "ChannelAttention",
+    "Classify",
+    "Concat",
+    "ContrastiveHead",
+    "FFE",
     "Conv",
     "Conv2",
-    "LightConv",
-    "RepConv",
+    "ConvTranspose",
     "DWConv",
     "DWConvTranspose2d",
     "DySample",
-    "ConvTranspose",
-    "Focus",
-    "GhostConv",
-    "ChannelAttention",
-    "SpatialAttention",
-    "CBAM",
     "ELA",
-    "Concat",
-    "WeightedConcat",
-    "TransformerLayer",
-    "TransformerBlock",
-    "MLPBlock",
-    "LayerNorm2d",
-    "DFL",
-    "HGBlock",
-    "HGStem",
-    "SPP",
-    "SPPF",
-    "C1",
-    "C2",
-    "C3",
-    "C2f",
-    "C3k2",
-    "C3k2CSE",
-    "RGG",
-    "AAM",
-    "MEN",
-    "BAFE",
-    "FFE",
-    "SCDown",
-    "C2fPSA",
-    "C2PSA",
-    "C2fAttn",
-    "C3x",
-    "C3TR",
-    "C3Ghost",
-    "GhostBottleneck",
-    "Bottleneck",
-    "BottleneckCSP",
-    "Proto",
-    "Detect",
-    "DAGGDetect",
-    "Segment",
-    "Pose",
-    "Classify",
-    "TransformerEncoderLayer",
-    "RepC3",
-    "RTDETRDecoder",
-    "AIFI",
     "DeformableTransformerDecoder",
     "DeformableTransformerDecoderLayer",
-    "MSDeformAttn",
-    "MLP",
-    "ResNetLayer",
-    "OBB",
-    "WorldDetect",
-    "v10Detect",
+    "Depth",
+    "Detect",
+    "DAGGDetect",
+    "Focus",
+    "GhostBottleneck",
+    "GhostConv",
+    "HGBlock",
+    "HGStem",
     "ImagePoolingAttn",
-    "ContrastiveHead",
-    "BNContrastiveHead",
+    "Index",
+    "LRPCHead",
+    "LayerNorm2d",
+    "LightConv",
+    "MLPBlock",
+    "MSDeformAttn",
+    "MaxSigmoidAttnBlock",
+    "MEN",
+    "Pose",
+    "Pose26",
+    "Proto",
+    "RTDETRDecoder",
+    "RepC3",
+    "RepConv",
     "RepNCSPELAN4",
-    "ADown",
-    "SPPELAN",
-    "CBFuse",
-    "CBLinear",
-    "AConv",
-    "ELAN1",
     "RepVGGDW",
-    "CIB",
-    "C2fCIB",
-    "Attention",
-    "PSA",
+    "RGG",
+    "ResNetLayer",
+    "SCDown",
+    "Segment",
+    "Segment26",
+    "SemanticSegment",
+    "SpatialAttention",
+    "WeightedConcat",
+    "TorchVision",
+    "TransformerBlock",
+    "TransformerEncoderLayer",
+    "TransformerLayer",
+    "WorldDetect",
+    "YOLOEDetect",
+    "YOLOESegment",
+    "YOLOESegment26",
+    "v10Detect",
 )
+
