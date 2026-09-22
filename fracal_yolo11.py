@@ -177,6 +177,7 @@ class FracalCalibrator:
 def run_validation(args):
     from ultralytics import YOLO
     from ultralytics.models.yolo.detect.val import DetectionValidator
+    from ultralytics.utils import ops
 
     with Path(args.stats).open(encoding="utf-8") as stream:
         stats = json.load(stream)
@@ -190,7 +191,22 @@ def run_validation(args):
 
     calibrator = FracalCalibrator(stats, args.beta, args.fractal_lambda)
 
-    class FracalValidator(DetectionValidator):
+    class ComparisonValidator(DetectionValidator):
+        def postprocess(self, preds):
+            # Prevent a cold-start NMS timeout from silently dropping detections
+            # in the first batch. Both arms use identical thresholds and limits.
+            return ops.non_max_suppression(
+                preds,
+                self.args.conf,
+                self.args.iou,
+                labels=self.lb,
+                multi_label=True,
+                agnostic=self.args.single_cls or self.args.agnostic_nms,
+                max_det=self.args.max_det,
+                max_time_img=10.0,
+            )
+
+    class FracalValidator(ComparisonValidator):
         def postprocess(self, preds):
             return super().postprocess(calibrator(preds))
 
@@ -225,7 +241,7 @@ def run_validation(args):
 
     summary = {"weights": str(Path(args.weights).resolve()), "stats": str(Path(args.stats).resolve())}
     if args.baseline:
-        baseline = model.val(name=f"{args.name}_baseline", **common)
+        baseline = model.val(validator=ComparisonValidator, name=f"{args.name}_baseline", **common)
         summary["baseline"] = metrics_summary(baseline)
     fracal = model.val(validator=FracalValidator, name=f"{args.name}_fracal", **common)
     summary["fracal"] = metrics_summary(fracal)
