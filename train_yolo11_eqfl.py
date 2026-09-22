@@ -5,6 +5,7 @@ recorded YOLO11n seed-0 baseline, so this run changes only classification loss.
 """
 
 import argparse
+from pathlib import Path
 
 from ultralytics import YOLO
 
@@ -20,7 +21,8 @@ def main():
     parser.add_argument("--name", default="yolo11n_mixdatasets_32classes_eqfl_seed0")
     args = parser.parse_args()
 
-    YOLO(args.weights).train(
+    model_yaml = Path(__file__).resolve().parent / "ultralytics/cfg/models/11/yolo11n-eqfl.yaml"
+    YOLO(str(model_yaml)).load(args.weights).train(
         data=args.data,
         epochs=200,
         patience=40,
@@ -37,9 +39,6 @@ def main():
         mosaic=1.0,
         mixup=0.0,
         close_mosaic=10,
-        cls_loss="eqfl",
-        efl_gamma=2.0,
-        efl_scale=4.0,
         save=True,
         save_period=10,
         plots=True,

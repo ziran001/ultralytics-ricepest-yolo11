@@ -9,12 +9,28 @@ from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
 
+from ultralytics import YOLO
 from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils.loss import EqualizedFocalLoss
 
 
 class TestEqualizedFocalLoss(unittest.TestCase):
+    def test_model_yaml_selects_eqfl_without_architecture_change(self):
+        model = YOLO("ultralytics/cfg/models/11/yolo11n-eqfl.yaml")
+        vanilla = DetectionModel("ultralytics/cfg/models/11/yolo11n.yaml", nc=32, verbose=False)
+        self.assertEqual(model.overrides["cls_loss"], "eqfl")
+        self.assertEqual(model.overrides["efl_gamma"], 2.0)
+        self.assertEqual(model.model.yaml["scale"], "n")
+        self.assertEqual(model.model.yaml["nc"], 32)
+        self.assertEqual(
+            {key: tuple(value.shape) for key, value in model.model.state_dict().items()},
+            {key: tuple(value.shape) for key, value in vanilla.state_dict().items()},
+        )
+        self.assertEqual(model.model.args["cls_loss"], "eqfl")
+        model.model.args = SimpleNamespace(**model.model.args)  # DetectionTrainer supplies this before loss creation.
+        self.assertEqual(model.model.init_criterion().cls_loss_name, "eqfl")
+
     def test_eqfl_starts_as_fixed_quality_focal_loss(self):
         logits = torch.tensor([[[0.2, -0.4]]], requires_grad=True)
         quality = torch.tensor([[[0.7, 0.0]]])
