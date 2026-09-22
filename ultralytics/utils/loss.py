@@ -1,6 +1,7 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -60,6 +61,75 @@ class FocalLoss(nn.Module):
             alpha_factor = label * alpha + (1 - label) * (1 - alpha)
             loss *= alpha_factor
         return loss.mean(1).sum()
+
+
+class EqualizedFocalLoss(nn.Module):
+    """EFL-family classification loss with per-class gradient balancing for YOLO detection logits.
+
+    ``eqfl`` follows the quality-label variant in the EFL paper and accepts TAL's soft target scores.
+    ``qfl`` is its fixed-gamma control. ``efl`` uses binary targets, as in the original EFL loss.
+    The caller retains YOLO's original target-score normalization and classification gain.
+    """
+
+    def __init__(self, num_classes, mode="eqfl", gamma=2.0, scale=4.0, alpha=0.25):
+        super().__init__()
+        if mode not in {"qfl", "efl", "eqfl"}:
+            raise ValueError(f"Unsupported focal classification loss '{mode}'.")
+        if gamma <= 0 or scale < 0 or not 0 <= alpha <= 1:
+            raise ValueError("efl_gamma must be > 0, efl_scale >= 0, and efl_alpha in [0, 1].")
+        self.mode, self.gamma, self.scale, self.alpha = mode, gamma, scale, alpha
+        self.grad_scale = 1.0
+        self.register_buffer("pos_grad", torch.zeros(num_classes, dtype=torch.float32))
+        self.register_buffer("neg_grad", torch.zeros(num_classes, dtype=torch.float32))
+
+    @torch.no_grad()
+    def _collect_grad(self, grad, positive):
+        """Accumulate unscaled absolute logit gradients after each backward pass."""
+        finite = torch.isfinite(grad).all().to(dtype=torch.int32)
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(finite, op=dist.ReduceOp.MIN)
+        if not finite.item():
+            return grad  # AMP may skip an overflowing step; do not poison the running ratios.
+        magnitude = grad.detach().float().abs() / self.grad_scale
+        positive_grad = (magnitude * positive).sum(dim=(0, 1))
+        negative_grad = (magnitude * ~positive).sum(dim=(0, 1))
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(positive_grad)
+            dist.all_reduce(negative_grad)
+        self.pos_grad.add_(positive_grad)
+        self.neg_grad.add_(negative_grad)
+        return grad
+
+    def forward(self, logits, target_scores):
+        """Return unreduced loss for each anchor and class."""
+        with autocast(enabled=False):
+            logits = logits.float()
+            target_scores = target_scores.float()
+            positive = target_scores > 0
+            probability = logits.sigmoid()
+            if self.mode == "qfl":
+                gamma = logits.new_full((self.pos_grad.numel(),), self.gamma)
+                weight = 1.0
+            else:
+                ratio = torch.where(
+                    self.neg_grad > 0,
+                    (self.pos_grad / self.neg_grad.clamp_min(1e-10)).clamp(0, 1),
+                    torch.ones_like(self.pos_grad),
+                )
+                gamma = self.gamma + self.scale * (1 - ratio)
+                weight = gamma / self.gamma
+                if logits.requires_grad:
+                    logits.register_hook(lambda grad: self._collect_grad(grad, positive))
+
+            if self.mode == "efl":
+                binary_target = positive.to(logits.dtype)
+                base = F.binary_cross_entropy_with_logits(logits, binary_target, reduction="none")
+                pt = torch.where(positive, probability, 1 - probability)
+                alpha = torch.where(positive, self.alpha, 1 - self.alpha)
+                return base * (1 - pt).pow(gamma) * weight * alpha
+
+            base = F.binary_cross_entropy_with_logits(logits, target_scores, reduction="none")
+            return base * (target_scores - probability).abs().pow(gamma) * weight
 
 
 class DFLoss(nn.Module):
@@ -188,6 +258,22 @@ class v8DetectionLoss:
 
         m = model.model[-1]  # Detect() module
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
+        self.cls_loss_name = getattr(h, "cls_loss", "bce")
+        if self.cls_loss_name not in {"bce", "qfl", "efl", "eqfl"}:
+            raise ValueError(f"Unsupported cls_loss '{self.cls_loss_name}'. Expected bce, qfl, efl, or eqfl.")
+        if self.cls_loss_name != "bce" and (type(self) is not v8DetectionLoss or getattr(model, "end2end", False)):
+            raise ValueError("EFL-family classification losses currently support standard YOLO Detect models only.")
+        self.focal_cls_loss = (
+            EqualizedFocalLoss(
+                m.nc,
+                mode=self.cls_loss_name,
+                gamma=getattr(h, "efl_gamma", 2.0),
+                scale=getattr(h, "efl_scale", 4.0),
+                alpha=getattr(h, "efl_alpha", 0.25),
+            ).to(device)
+            if self.cls_loss_name != "bce"
+            else None
+        )
         self.hyp = h
         self.stride = m.stride  # model strides
         self.nc = m.nc  # number of classes
@@ -204,6 +290,22 @@ class v8DetectionLoss:
             inner_iou_ratio=getattr(h, "inner_iou_ratio", 0.7),
         ).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
+
+    def classification_state_dict(self):
+        """Save adaptive gradient statistics separately from YOLO's model-only checkpoints."""
+        if self.cls_loss_name not in {"efl", "eqfl"}:
+            return None
+        return {key: value.detach().cpu() for key, value in self.focal_cls_loss.state_dict().items()}
+
+    def load_classification_state_dict(self, state):
+        """Restore adaptive gradient statistics before the first resumed batch."""
+        if self.cls_loss_name in {"efl", "eqfl"}:
+            self.focal_cls_loss.load_state_dict(state)
+
+    def set_classification_grad_scale(self, scale):
+        """Unscale AMP gradients before recording the positive/negative ratio."""
+        if self.cls_loss_name in {"efl", "eqfl"}:
+            self.focal_cls_loss.grad_scale = scale
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
@@ -273,7 +375,10 @@ class v8DetectionLoss:
 
         # Cls loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        if self.focal_cls_loss is None:
+            loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        else:
+            loss[1] = self.focal_cls_loss(pred_scores, target_scores).sum() / target_scores_sum
 
         # Bbox loss
         if fg_mask.sum():
