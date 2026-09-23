@@ -115,13 +115,15 @@ class TestEqualizedFocalLoss(unittest.TestCase):
             trainer.args = SimpleNamespace(model="yolo11n.pt", close_mosaic=0)
             trainer.epoch, trainer.best_fitness, trainer.fitness = 0, 0.5, 0.5
             trainer.metrics = {}
-            trainer.read_results_csv = lambda: {}
+            trainer.csv = Path(directory) / "results.csv"
+            trainer.csv.write_text("epoch,metrics/mAP50(B)\n1,0.25\n", encoding="utf-8")
             trainer.last = Path(directory) / "last.pt"
             trainer.best = Path(directory) / "best.pt"
             trainer.wdir = Path(directory)
             trainer.save_period = -1
             trainer.save_model()
             checkpoint = torch.load(trainer.last, weights_only=False)
+            self.assertEqual(checkpoint["train_results"]["metrics/mAP50(B)"], [0.25])
             self.assertEqual(checkpoint["cls_loss_state"]["pos_grad"][3].item(), 1.25)
             model.criterion.focal_cls_loss.pos_grad.zero_()
             model.criterion.focal_cls_loss.neg_grad.zero_()
