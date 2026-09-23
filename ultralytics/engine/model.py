@@ -251,6 +251,11 @@ class Model(nn.Module):
         self.model = (model or self._smart_load("model"))(cfg_dict, verbose=verbose and RANK == -1)  # build model
         self.overrides["model"] = self.cfg
         self.overrides["task"] = self.task
+        # Optional detection loss settings in a model YAML should follow that model into training.
+        if self.task == "detect":
+            self.overrides.update(
+                {key: cfg_dict[key] for key in ("cls_loss", "efl_gamma", "efl_scale", "efl_alpha") if key in cfg_dict}
+            )
 
         # Below added to allow export from YAMLs
         self.model.args = {**DEFAULT_CFG_DICT, **self.overrides}  # combine default and model args (prefer model args)
@@ -789,7 +794,16 @@ class Model(nn.Module):
             "model": self.overrides["model"],
             "task": self.task,
         }  # method defaults
-        args = {**overrides, **custom, **kwargs, "mode": "train"}  # highest priority args on the right
+        model_loss_defaults = (
+            {
+                key: self.model.yaml[key]
+                for key in ("cls_loss", "efl_gamma", "efl_scale", "efl_alpha")
+                if key in self.model.yaml
+            }
+            if self.task == "detect"
+            else {}
+        )
+        args = {**model_loss_defaults, **overrides, **custom, **kwargs, "mode": "train"}  # rightmost values win
         if args.get("resume"):
             args["resume"] = self.ckpt_path
 

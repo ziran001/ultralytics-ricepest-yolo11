@@ -390,6 +390,10 @@ class BaseTrainer:
                     )
 
                 # Backward
+                model = self.model.module if hasattr(self.model, "module") else self.model
+                criterion = getattr(model, "criterion", None)
+                if criterion is not None and hasattr(criterion, "set_classification_grad_scale"):
+                    criterion.set_classification_grad_scale(self.scaler.get_scale())
                 self.scaler.scale(self.loss).backward()
 
                 # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
@@ -499,15 +503,32 @@ class BaseTrainer:
             torch.cuda.empty_cache()
 
     def read_results_csv(self):
-        """Read results.csv into a dict using pandas."""
-        import pandas as pd  # scope for faster 'import ultralytics'
+        """Read results.csv into a dictionary without requiring the optional pandas package."""
+        import csv
 
-        return pd.read_csv(self.csv).to_dict(orient="list")
+        with open(self.csv, encoding="utf-8", newline="") as file:
+            reader = csv.DictReader(file)
+            results = {key: [] for key in (reader.fieldnames or [])}
+            for row in reader:
+                for key, value in row.items():
+                    try:
+                        value = float(value)
+                    except (TypeError, ValueError):
+                        pass
+                    results[key].append(value)
+        return results
 
     def save_model(self):
         """Save model training checkpoints with additional metadata."""
         import io
 
+        model = self.model.module if hasattr(self.model, "module") else self.model
+        criterion = getattr(model, "criterion", None)
+        cls_loss_state = (
+            criterion.classification_state_dict()
+            if criterion is not None and hasattr(criterion, "classification_state_dict")
+            else None
+        )
         # Serialize ckpt to a byte buffer once (faster than repeated torch.save() calls)
         buffer = io.BytesIO()
         torch.save(
@@ -518,6 +539,7 @@ class BaseTrainer:
                 "ema": deepcopy(self.ema.ema).half(),
                 "updates": self.ema.updates,
                 "optimizer": convert_optimizer_state_dict_to_fp16(deepcopy(self.optimizer.state_dict())),
+                "cls_loss_state": cls_loss_state,
                 "train_args": vars(self.args),  # save as dict
                 "train_metrics": {**self.metrics, **{"fitness": self.fitness}},
                 "train_results": self.read_results_csv(),
@@ -727,6 +749,11 @@ class BaseTrainer:
         if self.ema and ckpt.get("ema"):
             self.ema.ema.load_state_dict(ckpt["ema"].float().state_dict())  # EMA
             self.ema.updates = ckpt["updates"]
+        if ckpt.get("cls_loss_state") is not None:
+            model = self.model.module if hasattr(self.model, "module") else self.model
+            if getattr(model, "criterion", None) is None:
+                model.criterion = model.init_criterion()
+            model.criterion.load_classification_state_dict(ckpt["cls_loss_state"])
         assert start_epoch > 0, (
             f"{self.args.model} training to {self.epochs} epochs is finished, nothing to resume.\n"
             f"Start a new training without resuming, i.e. 'yolo train model={self.args.model}'"
