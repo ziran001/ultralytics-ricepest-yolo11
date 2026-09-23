@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--device", default="0")
     parser.add_argument("--project", default="/root/autodl-tmp/runs/train")
     parser.add_argument("--name", default="yolo11n_mixdatasets_32classes_eqfl_seed0")
+    parser.add_argument("--plots", action="store_true", help="Generate training plots (requires pandas).")
     args = parser.parse_args()
 
     model_yaml = Path(__file__).resolve().parent / "ultralytics/cfg/models/11/yolo11n-eqfl.yaml"
@@ -41,7 +42,7 @@ def main():
         close_mosaic=10,
         save=True,
         save_period=10,
-        plots=True,
+        plots=args.plots,
         exist_ok=False,
         project=args.project,
         name=args.name,
