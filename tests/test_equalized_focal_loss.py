@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -13,9 +14,14 @@ from ultralytics import YOLO
 from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils.loss import EqualizedFocalLoss
+from ultralytics.utils.metrics import compute_ap
 
 
 class TestEqualizedFocalLoss(unittest.TestCase):
+    def test_compute_ap_supports_current_numpy(self):
+        ap, _, _ = compute_ap(np.array([0.0, 0.5, 1.0]), np.array([1.0, 0.75, 0.5]))
+        self.assertTrue(np.isfinite(ap))
+
     def test_model_yaml_selects_eqfl_without_architecture_change(self):
         model = YOLO("ultralytics/cfg/models/11/yolo11n-eqfl.yaml")
         vanilla = DetectionModel("ultralytics/cfg/models/11/yolo11n.yaml", nc=32, verbose=False)
