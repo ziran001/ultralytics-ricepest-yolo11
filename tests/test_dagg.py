@@ -3,14 +3,16 @@
 from types import SimpleNamespace
 
 import torch
+import torch.nn as nn
 
 from ultralytics.nn.modules import DAGGDetect
 from ultralytics.nn.tasks import DetectionModel
+from ultralytics.utils.loss import DAGGDetectionLoss
 
 
 def build_dagg_model():
     """Build a small DAGG model with the loss hyperparameters required by the detection loss."""
-    model = DetectionModel("ultralytics/cfg/models/11/yolo11-dagg-p3.yaml", verbose=False)
+    model = DetectionModel("ultralytics/cfg/models/11/yolo11n-dagg-p3.yaml", verbose=False)
     model.args = SimpleNamespace(box=7.5, cls=0.5, dfl=1.5, iou_loss="ciou", inner_iou_ratio=0.7)
     return model
 
@@ -41,6 +43,14 @@ def test_dagg_training_forward_and_loss():
     assert torch.isfinite(loss)
     assert torch.isfinite(loss_items).all()
     assert loss_items[-1] > 0
+
+
+def test_dagg_keeps_standard_bce_classification_loss():
+    """DAGG must add only its auxiliary term and leave YOLO11 classification on BCE."""
+    criterion = build_dagg_model().init_criterion()
+
+    assert isinstance(criterion, DAGGDetectionLoss)
+    assert isinstance(criterion.bce, nn.BCEWithLogitsLoss)
 
 
 def test_dagg_is_skipped_during_inference():

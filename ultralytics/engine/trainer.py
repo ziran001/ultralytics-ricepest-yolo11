@@ -499,10 +499,20 @@ class BaseTrainer:
             torch.cuda.empty_cache()
 
     def read_results_csv(self):
-        """Read results.csv into a dict using pandas."""
-        import pandas as pd  # scope for faster 'import ultralytics'
+        """Read results.csv into a dictionary without requiring the optional pandas package."""
+        import csv
 
-        return pd.read_csv(self.csv).to_dict(orient="list")
+        with open(self.csv, encoding="utf-8", newline="") as file:
+            reader = csv.DictReader(file)
+            results = {key: [] for key in (reader.fieldnames or [])}
+            for row in reader:
+                for key, value in row.items():
+                    try:
+                        value = float(value)
+                    except (TypeError, ValueError):
+                        pass
+                    results[key].append(value)
+        return results
 
     def save_model(self):
         """Save model training checkpoints with additional metadata."""
